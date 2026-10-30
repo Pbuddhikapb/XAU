@@ -132,3 +132,24 @@ def test_incremental_vs_historical_batch_parity():
     assert np.isclose(batch_last["ema_50"], slice_last["ema_50"], atol=1e-3)
     assert np.isclose(batch_last["atr_14"], slice_last["atr_14"], atol=1e-3)
     assert np.isclose(batch_last["bb_middle"], slice_last["bb_middle"], atol=1e-3)
+
+
+@pytest.mark.asyncio
+async def test_process_and_persist_candle_close():
+    candle = {
+        "symbol": "XAUUSDT",
+        "timeframe": "1m",
+        "open_time": datetime.now(UTC),
+        "close_time": datetime.now(UTC) + timedelta(minutes=1),
+        "open": 2650.0,
+        "high": 2655.0,
+        "low": 2648.0,
+        "close": 2653.0,
+        "volume": 120.0,
+        "taker_buy_volume": 65.0,
+        "is_confirmed": True,
+    }
+    # Test with candle
+    snap = await IndicatorEngine.process_and_persist_candle_close(candle, symbol="XAUUSDT", timeframe="1m")
+    # Even if DB has few rows, it handles gracefully without crashing
+    assert snap is None or isinstance(snap, dict)

@@ -19,7 +19,7 @@ def calculate_ema(series: pd.Series, period: int, min_periods: int | None = None
     """
     if series.empty:
         return pd.Series(dtype=np.float64, index=series.index)
-    min_p = period if min_periods is None else min_periods
+    min_p = min(period, 5) if min_periods is None else min_periods
     return series.ewm(span=period, adjust=False, min_periods=min_p).mean()
 
 
@@ -128,21 +128,29 @@ def evaluate_trend_direction_and_strength(close: pd.Series, high: pd.Series, low
     e100 = float(emas["ema_100"].loc[last_idx])
     e200 = float(emas["ema_200"].loc[last_idx])
 
+    def safe_num(v: float | None, decimals: int = 4) -> float | None:
+        if v is None or np.isnan(v):
+            return None
+        return round(float(v), decimals)
+
     adx_val = float(dmi["adx"].loc[last_idx]) if not np.isnan(dmi["adx"].loc[last_idx]) else 20.0
-    plus_di_val = float(dmi["plus_di"].loc[last_idx])
-    minus_di_val = float(dmi["minus_di"].loc[last_idx])
+    plus_di_raw = float(dmi["plus_di"].loc[last_idx])
+    plus_di_val = plus_di_raw if not np.isnan(plus_di_raw) else 0.0
+    minus_di_raw = float(dmi["minus_di"].loc[last_idx])
+    minus_di_val = minus_di_raw if not np.isnan(minus_di_raw) else 0.0
 
     # Direction evaluation
-    is_bullish_stack = e20 > e50 > e100 > e200
-    is_bearish_stack = e20 < e50 < e100 < e200
+    has_valid_emas = not (np.isnan(e20) or np.isnan(e50) or np.isnan(e100) or np.isnan(e200))
+    is_bullish_stack = has_valid_emas and (e20 > e50 > e100 > e200)
+    is_bearish_stack = has_valid_emas and (e20 < e50 < e100 < e200)
 
     if is_bullish_stack and c_val > e20:
         direction = "BULLISH"
     elif is_bearish_stack and c_val < e20:
         direction = "BEARISH"
-    elif e20 > e50 and c_val > e200:
+    elif not np.isnan(e20) and not np.isnan(e50) and e20 > e50 and (np.isnan(e200) or c_val > e200):
         direction = "POTENTIAL_BULLISH"
-    elif e20 < e50 and c_val < e200:
+    elif not np.isnan(e20) and not np.isnan(e50) and e20 < e50 and (np.isnan(e200) or c_val < e200):
         direction = "POTENTIAL_BEARISH"
     else:
         direction = "NEUTRAL"
@@ -158,9 +166,9 @@ def evaluate_trend_direction_and_strength(close: pd.Series, high: pd.Series, low
         "plus_di": round(plus_di_val, 2),
         "minus_di": round(minus_di_val, 2),
         "emas": {
-            "ema_20": round(e20, 4),
-            "ema_50": round(e50, 4),
-            "ema_100": round(e100, 4),
-            "ema_200": round(e200, 4),
+            "ema_20": safe_num(e20, 4),
+            "ema_50": safe_num(e50, 4),
+            "ema_100": safe_num(e100, 4),
+            "ema_200": safe_num(e200, 4),
         },
     }

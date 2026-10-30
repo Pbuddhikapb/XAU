@@ -40,6 +40,8 @@ def calculate_session_anchored_vwap(
         candles[time_col] = pd.to_datetime(candles[time_col], utc=True)
     elif candles[time_col].dt.tz is None:
         candles[time_col] = candles[time_col].dt.tz_localize("UTC")
+    else:
+        candles[time_col] = candles[time_col].dt.tz_convert("UTC")
 
     # Shift time by -23 hours so that 23:00 UTC marks the start of a calendar date bucket
     shifted_time = candles[time_col] - pd.Timedelta(hours=session_reset_hour_utc)
@@ -59,14 +61,16 @@ def calculate_session_anchored_vwap(
     cum_vol = grouped["volume"].cumsum()
 
     eps = 1e-9
-    vwap = cum_tp_vol / (cum_vol + eps)
+    # If cumulative volume is 0 or negligible, fallback VWAP to typical price
+    vwap_arr = np.where(cum_vol > 0, cum_tp_vol / (cum_vol + eps), tp)
+    vwap = pd.Series(vwap_arr, index=candles.index, dtype=np.float64)
 
     # Calculate VWAP variance & standard deviation
     candles["_vwap"] = vwap
     candles["_diff_sq_vol"] = vol * (tp - vwap) ** 2
     cum_diff_sq_vol = candles.groupby("_session_id", sort=False)["_diff_sq_vol"].cumsum()
     variance = cum_diff_sq_vol / (cum_vol + eps)
-    std_dev = np.sqrt(variance.clip(lower=0.0))
+    std_dev = pd.Series(np.sqrt(variance.clip(lower=0.0)), index=candles.index, dtype=np.float64)
 
     upper_1 = vwap + std_dev
     lower_1 = vwap - std_dev
@@ -129,12 +133,17 @@ def evaluate_vwap_position(
     else:
         zone = "AT_VWAP"
 
+    def safe_num(v: float, decimals: int = 4) -> float | None:
+        if np.isnan(v):
+            return None
+        return round(float(v), decimals)
+
     return {
-        "vwap": round(vwap_val, 4),
-        "vwap_upper_1": round(u1, 4),
-        "vwap_lower_1": round(l1, 4),
-        "vwap_upper_2": round(u2, 4),
-        "vwap_lower_2": round(l2, 4),
-        "distance_pct": round(distance_pct, 4),
+        "vwap": safe_num(vwap_val, 4) if not np.isnan(vwap_val) else 0.0,
+        "vwap_upper_1": safe_num(u1, 4),
+        "vwap_lower_1": safe_num(l1, 4),
+        "vwap_upper_2": safe_num(u2, 4),
+        "vwap_lower_2": safe_num(l2, 4),
+        "distance_pct": safe_num(distance_pct, 4) if not np.isnan(distance_pct) else 0.0,
         "zone": zone,
     }

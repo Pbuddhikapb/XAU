@@ -122,24 +122,30 @@ def evaluate_volatility_regime(high: pd.Series, low: pd.Series, close: pd.Series
 
     last_idx = close.index[-1]
     atr_val = float(atr_s.loc[last_idx]) if not np.isnan(atr_s.loc[last_idx]) else 0.0
-    u_val = float(bb_df["upper"].loc[last_idx])
-    m_val = float(bb_df["middle"].loc[last_idx])
-    l_val = float(bb_df["lower"].loc[last_idx])
-    bw_val = float(bb_df["bandwidth"].loc[last_idx])
-    pct_b_val = float(bb_df["pct_b"].loc[last_idx])
-    vol_pct = float(vol_pct_s.loc[last_idx])
+    u_raw = float(bb_df["upper"].loc[last_idx])
+    m_raw = float(bb_df["middle"].loc[last_idx])
+    l_raw = float(bb_df["lower"].loc[last_idx])
+    bw_raw = float(bb_df["bandwidth"].loc[last_idx])
+    pct_b_raw = float(bb_df["pct_b"].loc[last_idx])
+    vol_pct_raw = float(vol_pct_s.loc[last_idx])
+    vol_pct = vol_pct_raw if not np.isnan(vol_pct_raw) else 50.0
+
+    def safe_num(v: float, decimals: int = 4) -> float | None:
+        if np.isnan(v):
+            return None
+        return round(float(v), decimals)
 
     # Squeeze: Bandwidth in lowest 15% of recent 50 bars
     recent_bw = bb_df["bandwidth"].dropna().tail(50)
-    if len(recent_bw) >= 10:
+    if len(recent_bw) >= 10 and not np.isnan(bw_raw):
         bw_threshold = float(np.percentile(recent_bw, 15))
-        is_squeeze = bw_val <= bw_threshold
+        is_squeeze = bw_raw <= bw_threshold
     else:
         is_squeeze = False
 
     # Expanding: Bandwidth rising sharply above rolling 20 MA of bandwidth
     bw_ma = bb_df["bandwidth"].rolling(20).mean().loc[last_idx]
-    is_expanding = bw_val > bw_ma * 1.25 if not np.isnan(bw_ma) else False
+    is_expanding = bw_raw > bw_ma * 1.25 if not (np.isnan(bw_ma) or np.isnan(bw_raw)) else False
 
     if is_squeeze:
         regime = "COMPRESSED_SQUEEZE"
@@ -154,11 +160,11 @@ def evaluate_volatility_regime(high: pd.Series, low: pd.Series, close: pd.Series
 
     return {
         "atr_14": round(atr_val, 4),
-        "bb_upper": round(u_val, 4),
-        "bb_middle": round(m_val, 4),
-        "bb_lower": round(l_val, 4),
-        "bandwidth": round(bw_val, 6),
-        "pct_b": round(pct_b_val, 4),
+        "bb_upper": safe_num(u_raw, 4),
+        "bb_middle": safe_num(m_raw, 4),
+        "bb_lower": safe_num(l_raw, 4),
+        "bandwidth": safe_num(bw_raw, 6),
+        "pct_b": safe_num(pct_b_raw, 4),
         "volatility_percentile": round(vol_pct, 2),
         "regime": regime,
         "is_squeeze": is_squeeze,

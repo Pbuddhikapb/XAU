@@ -13,7 +13,9 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import SQLAlchemyError
 
 from backend.analytics.momentum import calculate_macd, calculate_rsi
 from backend.analytics.trend import calculate_adx_dmi, calculate_trend_emas
@@ -25,7 +27,7 @@ from backend.analytics.volatility import (
 from backend.analytics.volume import calculate_rvol, calculate_taker_buy_ratio
 from backend.analytics.vwap import calculate_session_anchored_vwap
 from backend.database import get_async_session
-from backend.models.tables import IndicatorSnapshot
+from backend.models.tables import IndicatorSnapshot, OHLCVCandle
 
 logger = logging.getLogger(__name__)
 
@@ -189,3 +191,68 @@ class IndicatorEngine:
         except Exception as e:
             logger.error("Failed to persist indicator snapshot: %s", e)
             raise
+
+    @staticmethod
+    async def process_and_persist_candle_close(
+        candle: dict[str, Any],
+        symbol: str = "XAUUSDT",
+        timeframe: str = "1m",
+    ) -> dict[str, Any] | None:
+        """
+        Real-time pipeline handler triggered upon confirmed candle close.
+        1. Loads historical window of confirmed candles from DB.
+        2. Combines with current candle.
+        3. Computes full indicator matrix.
+        4. Extracts and persists IndicatorSnapshot record.
+        """
+        try:
+            async with get_async_session() as session:
+                stmt = (
+                    select(OHLCVCandle)
+                    .where(OHLCVCandle.symbol == symbol.upper(), OHLCVCandle.timeframe == timeframe.lower())
+                    .order_by(OHLCVCandle.open_time.desc())
+                    .limit(249)
+                )
+                res = await session.execute(stmt)
+                past_candles = list(reversed(res.scalars().all()))
+
+            rows = [
+                {
+                    "open_time": c.open_time,
+                    "open": float(c.open),
+                    "high": float(c.high),
+                    "low": float(c.low),
+                    "close": float(c.close),
+                    "volume": float(c.volume),
+                    "taker_buy_volume": float(c.taker_buy_volume),
+                }
+                for c in past_candles
+            ]
+
+            # Append the newly closed candle if not already present
+            c_time = candle["open_time"]
+            if not rows or rows[-1]["open_time"] != c_time:
+                rows.append(
+                    {
+                        "open_time": c_time,
+                        "open": float(candle["open"]),
+                        "high": float(candle["high"]),
+                        "low": float(candle["low"]),
+                        "close": float(candle["close"]),
+                        "volume": float(candle["volume"]),
+                        "taker_buy_volume": float(candle.get("taker_buy_volume", 0.0)),
+                    }
+                )
+
+            df = pd.DataFrame(rows)
+            if len(df) < 5:
+                return None
+
+            computed = IndicatorEngine.compute_all_indicators(df, symbol=symbol, timeframe=timeframe)
+            snapshot = IndicatorEngine.extract_latest_snapshot(computed, symbol=symbol, timeframe=timeframe)
+            if snapshot:
+                await IndicatorEngine.persist_indicator_snapshot(snapshot)
+            return snapshot
+        except (SQLAlchemyError, ValueError, KeyError, TypeError, OSError) as e:
+            logger.error("Error in process_and_persist_candle_close: %s", e)
+            return None

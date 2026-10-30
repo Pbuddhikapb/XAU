@@ -128,9 +128,18 @@ def evaluate_volume_profile(
     delta_df = calculate_volume_delta(volume, taker_buy_vol)
 
     last_idx = volume.index[-1]
-    rvol_val = float(rvol_s.loc[last_idx])
-    ratio_val = float(ratio_s.loc[last_idx])
-    delta_val = float(delta_df["net_delta"].loc[last_idx])
+    rvol_raw = float(rvol_s.loc[last_idx])
+    ratio_raw = float(ratio_s.loc[last_idx])
+    delta_raw = float(delta_df["net_delta"].loc[last_idx])
+
+    def safe_num(v: float, decimals: int = 4) -> float | None:
+        if np.isnan(v):
+            return None
+        return round(float(v), decimals)
+
+    rvol_val = rvol_raw if not np.isnan(rvol_raw) else 1.0
+    ratio_val = ratio_raw if not np.isnan(ratio_raw) else 0.5
+    delta_val = delta_raw if not np.isnan(delta_raw) else 0.0
 
     is_expanded = rvol_val >= 1.5
 
@@ -143,9 +152,9 @@ def evaluate_volume_profile(
         bias = "NEUTRAL"
 
     return {
-        "relative_volume": round(rvol_val, 4),
-        "taker_buy_ratio": round(ratio_val, 4),
-        "net_volume_delta": round(delta_val, 4),
+        "relative_volume": safe_num(rvol_raw, 4) if not np.isnan(rvol_raw) else 1.0,
+        "taker_buy_ratio": safe_num(ratio_raw, 4) if not np.isnan(ratio_raw) else 0.5,
+        "net_volume_delta": safe_num(delta_raw, 4) if not np.isnan(delta_raw) else 0.0,
         "volume_expansion": is_expanded,
         "volume_bias": bias,
     }

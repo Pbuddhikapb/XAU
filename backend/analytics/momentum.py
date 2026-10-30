@@ -118,11 +118,20 @@ def evaluate_momentum(series: pd.Series) -> dict[str, Any]:
     roc_s = calculate_roc(series, period=14)
 
     last_idx = series.index[-1]
-    rsi_val = float(rsi_s.loc[last_idx])
-    m_val = float(macd_df["macd"].loc[last_idx])
-    s_val = float(macd_df["signal"].loc[last_idx])
-    h_val = float(macd_df["hist"].loc[last_idx])
-    roc_val = float(roc_s.loc[last_idx])
+    rsi_raw = float(rsi_s.loc[last_idx])
+    m_raw = float(macd_df["macd"].loc[last_idx])
+    s_raw = float(macd_df["signal"].loc[last_idx])
+    h_raw = float(macd_df["hist"].loc[last_idx])
+    roc_raw = float(roc_s.loc[last_idx])
+
+    def safe_num(v: float, decimals: int = 4) -> float | None:
+        if np.isnan(v):
+            return None
+        return round(float(v), decimals)
+
+    rsi_val = rsi_raw if not np.isnan(rsi_raw) else 50.0
+    h_val = h_raw if not np.isnan(h_raw) else 0.0
+    roc_val = roc_raw if not np.isnan(roc_raw) else 0.0
 
     is_overbought = rsi_val >= 70.0
     is_oversold = rsi_val <= 30.0
@@ -140,11 +149,11 @@ def evaluate_momentum(series: pd.Series) -> dict[str, Any]:
         bias = "NEUTRAL"
 
     return {
-        "rsi_14": round(rsi_val, 2),
-        "macd_val": round(m_val, 4),
-        "macd_signal": round(s_val, 4),
-        "macd_hist": round(h_val, 4),
-        "roc_14": round(roc_val, 4),
+        "rsi_14": safe_num(rsi_raw, 2) if not np.isnan(rsi_raw) else 50.0,
+        "macd_val": safe_num(m_raw, 4),
+        "macd_signal": safe_num(s_raw, 4),
+        "macd_hist": safe_num(h_raw, 4),
+        "roc_14": safe_num(roc_raw, 4),
         "momentum_bias": bias,
         "is_overbought": is_overbought,
         "is_oversold": is_oversold,

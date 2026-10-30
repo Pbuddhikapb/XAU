@@ -98,9 +98,10 @@ def detect_divergences(
     high_s = df["high"]
     times = df[time_col].astype(str).tolist()
 
-    if indicator_name == "RSI":
+    ind_key = indicator_name.upper().strip()
+    if ind_key == "RSI":
         ind_series = calculate_rsi(close_s, period=14)
-    elif indicator_name == "MACD_HIST":
+    elif ind_key in ("MACD_HIST", "MACD"):
         macd_df = calculate_macd(close_s)
         ind_series = macd_df["hist"]
     else:
@@ -126,6 +127,10 @@ def detect_divergences(
             if np.isnan(ind1) or np.isnan(ind2):
                 continue
 
+            # Invalidation: subsequent price dropped below swing low p2
+            is_invalidated = bool((low_s.iloc[i2 + 1 :] < p2).any()) if (i2 + 1 < len(low_s)) else False
+            is_active = not is_invalidated
+
             # Regular Bullish: Lower Low in price, Higher Low in indicator
             if p2 < p1 and ind2 > ind1:
                 pt1 = DivergencePoint(time=times[i1], price=p1, indicator_val=ind1, bar_index=i1)
@@ -133,12 +138,12 @@ def detect_divergences(
                 divergences.append(
                     DivergenceResult(
                         divergence_type="REGULAR_BULLISH",
-                        indicator_name=indicator_name,
+                        indicator_name=ind_key,
                         point_1=pt1,
                         point_2=pt2,
                         slope_price=(p2 - p1) / (i2 - i1),
                         slope_indicator=(ind2 - ind1) / (i2 - i1),
-                        is_active=True,
+                        is_active=is_active,
                     )
                 )
 
@@ -149,12 +154,12 @@ def detect_divergences(
                 divergences.append(
                     DivergenceResult(
                         divergence_type="HIDDEN_BULLISH",
-                        indicator_name=indicator_name,
+                        indicator_name=ind_key,
                         point_1=pt1,
                         point_2=pt2,
                         slope_price=(p2 - p1) / (i2 - i1),
                         slope_indicator=(ind2 - ind1) / (i2 - i1),
-                        is_active=True,
+                        is_active=is_active,
                     )
                 )
 
@@ -173,6 +178,10 @@ def detect_divergences(
             if np.isnan(ind1) or np.isnan(ind2):
                 continue
 
+            # Invalidation: subsequent price rose above swing high p2
+            is_invalidated = bool((high_s.iloc[i2 + 1 :] > p2).any()) if (i2 + 1 < len(high_s)) else False
+            is_active = not is_invalidated
+
             # Regular Bearish: Higher High in price, Lower High in indicator
             if p2 > p1 and ind2 < ind1:
                 pt1 = DivergencePoint(time=times[i1], price=p1, indicator_val=ind1, bar_index=i1)
@@ -180,12 +189,12 @@ def detect_divergences(
                 divergences.append(
                     DivergenceResult(
                         divergence_type="REGULAR_BEARISH",
-                        indicator_name=indicator_name,
+                        indicator_name=ind_key,
                         point_1=pt1,
                         point_2=pt2,
                         slope_price=(p2 - p1) / (i2 - i1),
                         slope_indicator=(ind2 - ind1) / (i2 - i1),
-                        is_active=True,
+                        is_active=is_active,
                     )
                 )
 
@@ -196,12 +205,12 @@ def detect_divergences(
                 divergences.append(
                     DivergenceResult(
                         divergence_type="HIDDEN_BEARISH",
-                        indicator_name=indicator_name,
+                        indicator_name=ind_key,
                         point_1=pt1,
                         point_2=pt2,
                         slope_price=(p2 - p1) / (i2 - i1),
                         slope_indicator=(ind2 - ind1) / (i2 - i1),
-                        is_active=True,
+                        is_active=is_active,
                     )
                 )
 

@@ -62,3 +62,29 @@ def test_market_prices_endpoint(client):
     assert response.status_code == 200
     data = response.json()
     assert data["symbol"] == "XAUUSDT"
+
+
+def test_analytics_indicators_endpoint(client):
+    response = client.get("/api/v1/analytics/indicators?timeframe=15m&limit=10")
+    assert response.status_code == 200
+    data = response.json()
+    assert isinstance(data, list)
+    if data:
+        assert "ema_20" in data[0]
+        assert "rsi_14" in data[0]
+        assert "vwap" in data[0]
+
+
+def test_analytics_divergences_endpoint(client):
+    response = client.get("/api/v1/analytics/divergences?timeframe=1h&indicator=RSI")
+    assert response.status_code == 200
+    data = response.json()
+    assert isinstance(data, list)
+
+
+def test_analytics_regime_endpoint(client):
+    response = client.get("/api/v1/analytics/regime?timeframe=1h")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["symbol"] == "XAUUSDT"
+    assert "status" in data or "trend" in data

@@ -8,16 +8,25 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
+import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.analytics.divergence import detect_divergences
+from backend.analytics.indicator_engine import IndicatorEngine
+from backend.analytics.momentum import evaluate_momentum
+from backend.analytics.trend import evaluate_trend_direction_and_strength
+from backend.analytics.volatility import evaluate_volatility_regime
+from backend.analytics.volume import evaluate_volume_profile
+from backend.analytics.vwap import evaluate_vwap_position
 from backend.config import settings
 from backend.data.session_tracker import SessionTracker
 from backend.database import get_db_session, init_db
 from backend.models.tables import (
+    IndicatorSnapshot,
     LiveMarketState,
     MarketMetadata,
     OHLCVCandle,
@@ -199,4 +208,181 @@ async def get_market_prices(session: AsyncSession = Depends(get_db_session)) -> 
         "basis": float(state.basis),
         "spread": float(state.spread),
         "last_update": state.last_update.isoformat(),
+    }
+
+
+@app.get("/api/v1/analytics/indicators")
+async def get_analytics_indicators(
+    timeframe: str = Query("1h", description="Candle timeframe"),
+    limit: int = Query(100, ge=1, le=500, description="Number of snapshot records"),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[dict[str, Any]]:
+    """Retrieve historical indicator calculation records."""
+    stmt = (
+        select(IndicatorSnapshot)
+        .where(IndicatorSnapshot.symbol == settings.SYMBOL, IndicatorSnapshot.timeframe == timeframe.lower())
+        .order_by(IndicatorSnapshot.candle_time.desc())
+        .limit(limit)
+    )
+    res = await session.execute(stmt)
+    records = res.scalars().all()
+
+    if records:
+        return [
+            {
+                "candle_time": r.candle_time.isoformat(),
+                "timeframe": r.timeframe,
+                "ema_20": float(r.ema_20) if r.ema_20 is not None else None,
+                "ema_50": float(r.ema_50) if r.ema_50 is not None else None,
+                "ema_100": float(r.ema_100) if r.ema_100 is not None else None,
+                "ema_200": float(r.ema_200) if r.ema_200 is not None else None,
+                "adx": float(r.adx) if r.adx is not None else None,
+                "trend_strength": float(r.trend_strength) if r.trend_strength is not None else None,
+                "rsi_14": float(r.rsi_14) if r.rsi_14 is not None else None,
+                "macd_val": float(r.macd_val) if r.macd_val is not None else None,
+                "macd_signal": float(r.macd_signal) if r.macd_signal is not None else None,
+                "macd_hist": float(r.macd_hist) if r.macd_hist is not None else None,
+                "atr_14": float(r.atr_14) if r.atr_14 is not None else None,
+                "bb_upper": float(r.bb_upper) if r.bb_upper is not None else None,
+                "bb_middle": float(r.bb_middle) if r.bb_middle is not None else None,
+                "bb_lower": float(r.bb_lower) if r.bb_lower is not None else None,
+                "volatility_percentile": float(r.volatility_percentile)
+                if r.volatility_percentile is not None
+                else None,
+                "relative_volume": float(r.relative_volume) if r.relative_volume is not None else None,
+                "taker_buy_ratio": float(r.taker_buy_ratio) if r.taker_buy_ratio is not None else None,
+                "vwap": float(r.vwap) if r.vwap is not None else None,
+            }
+            for r in reversed(records)
+        ]
+
+    # If DB table has not accumulated records yet, compute on recent candles
+    c_stmt = (
+        select(OHLCVCandle)
+        .where(OHLCVCandle.symbol == settings.SYMBOL, OHLCVCandle.timeframe == timeframe.lower())
+        .order_by(OHLCVCandle.open_time.desc())
+        .limit(max(limit + 200, 250))
+    )
+    c_res = await session.execute(c_stmt)
+    candles = list(reversed(c_res.scalars().all()))
+
+    if not candles:
+        return []
+
+    df = pd.DataFrame(
+        [
+            {
+                "open_time": c.open_time,
+                "open": float(c.open),
+                "high": float(c.high),
+                "low": float(c.low),
+                "close": float(c.close),
+                "volume": float(c.volume),
+                "taker_buy_volume": float(c.taker_buy_volume),
+            }
+            for c in candles
+        ]
+    )
+    computed = IndicatorEngine.compute_all_indicators(df, symbol=settings.SYMBOL, timeframe=timeframe)
+    output = []
+    for _, row in computed.tail(limit).iterrows():
+        snap = IndicatorEngine.extract_latest_snapshot(pd.DataFrame([row]), symbol=settings.SYMBOL, timeframe=timeframe)
+        if snap:
+            snap["candle_time"] = snap["candle_time"].isoformat()
+            output.append(snap)
+    return output
+
+
+@app.get("/api/v1/analytics/divergences")
+async def get_analytics_divergences(
+    timeframe: str = Query("1h", description="Candle timeframe"),
+    indicator: str = Query("RSI", description="Indicator: RSI or MACD_HIST"),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[dict[str, Any]]:
+    """Detect active momentum divergences."""
+    c_stmt = (
+        select(OHLCVCandle)
+        .where(OHLCVCandle.symbol == settings.SYMBOL, OHLCVCandle.timeframe == timeframe.lower())
+        .order_by(OHLCVCandle.open_time.desc())
+        .limit(100)
+    )
+    c_res = await session.execute(c_stmt)
+    candles = list(reversed(c_res.scalars().all()))
+
+    if len(candles) < 35:
+        return []
+
+    df = pd.DataFrame(
+        [
+            {
+                "open_time": c.open_time,
+                "open": float(c.open),
+                "high": float(c.high),
+                "low": float(c.low),
+                "close": float(c.close),
+                "volume": float(c.volume),
+                "taker_buy_volume": float(c.taker_buy_volume),
+            }
+            for c in candles
+        ]
+    )
+
+    divs = detect_divergences(df, indicator_name=indicator)
+    return [d.to_dict() for d in divs]
+
+
+@app.get("/api/v1/analytics/regime")
+async def get_analytics_regime(
+    timeframe: str = Query("1h", description="Candle timeframe"),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """Retrieve consolidated regime analysis (Trend, Momentum, Volatility, Volume, VWAP)."""
+    c_stmt = (
+        select(OHLCVCandle)
+        .where(OHLCVCandle.symbol == settings.SYMBOL, OHLCVCandle.timeframe == timeframe.lower())
+        .order_by(OHLCVCandle.open_time.desc())
+        .limit(250)
+    )
+    c_res = await session.execute(c_stmt)
+    candles = list(reversed(c_res.scalars().all()))
+
+    if len(candles) < 20:
+        return {
+            "symbol": settings.SYMBOL,
+            "timeframe": timeframe,
+            "status": "DATA_UNAVAILABLE",
+            "message": "Insufficient candle history to calculate market regime",
+        }
+
+    df = pd.DataFrame(
+        [
+            {
+                "open_time": c.open_time,
+                "open": float(c.open),
+                "high": float(c.high),
+                "low": float(c.low),
+                "close": float(c.close),
+                "volume": float(c.volume),
+                "taker_buy_volume": float(c.taker_buy_volume),
+            }
+            for c in candles
+        ]
+    )
+
+    trend_eval = evaluate_trend_direction_and_strength(df["close"], df["high"], df["low"])
+    momentum_eval = evaluate_momentum(df["close"])
+    volatility_eval = evaluate_volatility_regime(df["high"], df["low"], df["close"])
+    volume_eval = evaluate_volume_profile(
+        df["open"], df["high"], df["low"], df["close"], df["volume"], df["taker_buy_volume"]
+    )
+    vwap_eval = evaluate_vwap_position(df, session_reset_hour_utc=23)
+
+    return {
+        "symbol": settings.SYMBOL,
+        "timeframe": timeframe,
+        "trend": trend_eval,
+        "momentum": momentum_eval,
+        "volatility": volatility_eval,
+        "volume": volume_eval,
+        "vwap": vwap_eval,
     }

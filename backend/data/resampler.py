@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 import pandas as pd
 
-from backend.data.candle_validator import TIMEFRAME_SECONDS_MAP
+from backend.data.candle_validator import CandleValidator, TIMEFRAME_SECONDS_MAP
 
 PANDAS_OFFSET_MAP = {
     "1m": "1min",
@@ -29,14 +29,15 @@ PANDAS_OFFSET_MAP = {
 
 
 class CandleResampler:
-    """Resamples canonical 1-minute candles into higher timeframe bars."""
+    """Resamples canonical 1-minute candles into higher timeframe bars and reconciles against native candles."""
 
     @staticmethod
     def resample_ohlcv(
         df_1m: pd.DataFrame,
         target_timeframe: str,
         symbol: str = "XAUUSDT",
-        only_confirmed: bool = True
+        only_confirmed: bool = True,
+        recover_gaps: bool = False
     ) -> pd.DataFrame:
         """
         Resample 1-minute OHLCV DataFrame into target timeframe.
@@ -53,6 +54,10 @@ class CandleResampler:
         df = df_1m.copy()
         if not pd.api.types.is_datetime64_any_dtype(df["open_time"]):
             df["open_time"] = pd.to_datetime(df["open_time"], utc=True)
+
+        # Recover missing 1m gaps if requested
+        if recover_gaps:
+            df = CandleValidator.recover_missing_candles(df, timeframe="1m", symbol=symbol)
 
         df = df.sort_values("open_time").set_index("open_time")
 
@@ -110,3 +115,78 @@ class CandleResampler:
             "taker_buy_quote_volume", "is_confirmed"
         ]
         return resampled[output_cols]
+
+    @staticmethod
+    def reconcile_with_native(
+        resampled_df: pd.DataFrame,
+        native_df: pd.DataFrame,
+        price_tolerance: float = 0.05
+    ) -> Dict[str, any]:
+        """
+        Reconcile synthetic resampled candles against native Binance exchange candles.
+        Enforces Section 4 'reconcile against native exchange candles'.
+        """
+        if resampled_df.empty or native_df.empty:
+            return {
+                "matched_bars": 0,
+                "is_reconciled": False,
+                "error": "Empty dataset provided for reconciliation"
+            }
+
+        r_df = resampled_df.copy()
+        n_df = native_df.copy()
+
+        for d in (r_df, n_df):
+            if not pd.api.types.is_datetime64_any_dtype(d["open_time"]):
+                d["open_time"] = pd.to_datetime(d["open_time"], utc=True)
+
+        merged = pd.merge(
+            r_df, n_df,
+            on="open_time",
+            suffixes=("_resampled", "_native")
+        )
+
+        if merged.empty:
+            return {
+                "matched_bars": 0,
+                "is_reconciled": False,
+                "error": "No overlapping timestamps between resampled and native datasets"
+            }
+
+        # Compare prices
+        open_diff = (merged["open_resampled"] - merged["open_native"]).abs()
+        high_diff = (merged["high_resampled"] - merged["high_native"]).abs()
+        low_diff = (merged["low_resampled"] - merged["low_native"]).abs()
+        close_diff = (merged["close_resampled"] - merged["close_native"]).abs()
+
+        max_price_diff = float(max(
+            open_diff.max(), high_diff.max(), low_diff.max(), close_diff.max()
+        ))
+
+        price_matches = (
+            (open_diff <= price_tolerance) &
+            (high_diff <= price_tolerance) &
+            (low_diff <= price_tolerance) &
+            (close_diff <= price_tolerance)
+        )
+
+        match_count = int(price_matches.sum())
+        total_matched = len(merged)
+        price_match_rate = float(match_count / total_matched)
+
+        # Volume comparison (relative diff)
+        vol_r = merged["volume_resampled"]
+        vol_n = merged["volume_native"]
+        vol_diff_pct = ((vol_r - vol_n).abs() / vol_n.replace(0, 1.0)).max()
+
+        is_reconciled = (price_match_rate >= 0.99) and (max_price_diff <= price_tolerance)
+
+        return {
+            "matched_bars": total_matched,
+            "perfect_price_matches": match_count,
+            "price_match_rate": price_match_rate,
+            "max_price_diff": max_price_diff,
+            "max_volume_diff_pct": float(vol_diff_pct),
+            "is_reconciled": is_reconciled,
+        }
+

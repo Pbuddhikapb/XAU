@@ -75,3 +75,37 @@ def test_4h_boundary_alignment():
     assert len(df_4h) == 1
     assert df_4h.iloc[0]["open_time"] == pd.Timestamp("2026-10-30 00:00:00", tz="UTC")
     assert df_4h.iloc[0]["volume"] == 240 * 10.0
+
+
+def test_reconcile_with_native():
+    df_1m = generate_mock_1m_data(count=60, start_time="2026-10-30 00:00:00")
+    df_1h_resampled = CandleResampler.resample_ohlcv(df_1m, target_timeframe="1h")
+
+    # Native identical candle
+    df_native = df_1h_resampled.copy()
+    rec_result = CandleResampler.reconcile_with_native(df_1h_resampled, df_native)
+    assert rec_result["is_reconciled"] is True
+    assert rec_result["price_match_rate"] == 1.0
+    assert rec_result["max_price_diff"] == 0.0
+
+    # Native mismatched candle
+    df_native_bad = df_native.copy()
+    df_native_bad["close"] = df_native_bad["close"] + 5.0
+    rec_bad = CandleResampler.reconcile_with_native(df_1h_resampled, df_native_bad)
+    assert rec_bad["is_reconciled"] is False
+    assert rec_bad["max_price_diff"] >= 5.0
+
+
+def test_resample_with_gap_recovery():
+    # 10 minutes of data with a 1-minute gap at min 3 (indices 0, 1, 2, 4, 5, 6, 7, 8, 9)
+    df_1m = generate_mock_1m_data(count=10)
+    df_gap = df_1m.drop(index=[3]).reset_index(drop=True)
+
+    # Without gap recovery: first 5m bar has only 4 candles, so it gets dropped
+    df_5m_no_rec = CandleResampler.resample_ohlcv(df_gap, target_timeframe="5m", only_confirmed=True, recover_gaps=False)
+    assert len(df_5m_no_rec) == 1  # Only second 5m bar survived
+
+    # With gap recovery: missing 1m bar is imputed (0 vol), so both 5m bars survive
+    df_5m_rec = CandleResampler.resample_ohlcv(df_gap, target_timeframe="5m", only_confirmed=True, recover_gaps=True)
+    assert len(df_5m_rec) == 2
+

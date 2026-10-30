@@ -215,6 +215,11 @@ class BinanceWebSocketClient:
                         except asyncio.TimeoutError:
                             continue
 
+                    try:
+                        await asyncio.wait_for(ws.close(), timeout=1.5)
+                    except Exception:
+                        pass
+
             except ConnectionClosed as e:
                 logger.warning("WebSocket connection closed: %s. Reconnecting in %ss...", e, reconnect_delay)
             except Exception as e:

@@ -32,8 +32,12 @@ class ExchangeVerifier:
     """Authoritative verifier for the Binance XAUUSDT TradFi perpetual contract."""
 
     def __init__(self, base_url: Optional[str] = None, proxy_url: Optional[str] = None):
-        # Default to testnet if running in development without proxy, or live endpoint
-        self.base_url = base_url or settings.BINANCE_TESTNET_HTTP_URL
+        if base_url:
+            self.base_url = base_url
+        elif settings.ENVIRONMENT == "production" or settings.OUTBOUND_PROXY_URL:
+            self.base_url = settings.BINANCE_FUTURES_HTTP_URL
+        else:
+            self.base_url = settings.BINANCE_TESTNET_HTTP_URL
         self.proxy_url = proxy_url or settings.OUTBOUND_PROXY_URL
         self.symbol = settings.SYMBOL.upper()
 
@@ -154,6 +158,7 @@ class ExchangeVerifier:
             "onboard_timestamp": onboard_dt,
             "status": spec.get("status", "TRADING"),
             "is_active": spec.get("status") == "TRADING",
+            "rate_limits": info.get("rateLimits", []),
         }
         return result
 

@@ -43,3 +43,21 @@ def test_historical_downloader_daily_archive():
     # Idempotency check: Re-inserting the same data must succeed without duplicate error
     reinsert_count = downloader.bulk_insert_candles(df)
     assert reinsert_count == 1440
+
+
+def test_historical_downloader_mark_index_day():
+    downloader = HistoricalDownloader()
+    date_str = "2026-10-27"
+
+    count = downloader.ingest_mark_index_day(date_str)
+    assert count == 1440
+
+    from backend.models.tables import MarkIndexPrice
+    with get_sync_session() as session:
+        db_count = session.execute(
+            select(func.count()).select_from(MarkIndexPrice).where(
+                MarkIndexPrice.symbol == "XAUUSDT"
+            )
+        ).scalar()
+        assert db_count >= 1440
+

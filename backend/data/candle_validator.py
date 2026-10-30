@@ -131,3 +131,68 @@ class CandleValidator:
             "gap_intervals": gap_intervals[:50],  # cap preview
             "is_clean": (duplicates_count == 0 and gaps_count == 0),
         }
+
+    @staticmethod
+    def recover_missing_candles(
+        df: pd.DataFrame,
+        timeframe: str = "1m",
+        symbol: str = "XAUUSDT",
+        time_col: str = "open_time"
+    ) -> pd.DataFrame:
+        """
+        Recover missing candles by reindexing to a complete uniform time grid.
+        Missing candles have zero volume, zero trades, and OHLC set to the prior close.
+        Enforces Section 4 'Missing-candle recovery'.
+        """
+        if df.empty or len(df) < 2:
+            return df.copy()
+
+        df_work = df.copy()
+        if not pd.api.types.is_datetime64_any_dtype(df_work[time_col]):
+            df_work[time_col] = pd.to_datetime(
+                df_work[time_col],
+                unit="ms" if pd.api.types.is_numeric_dtype(df_work[time_col]) else None,
+                utc=True
+            )
+
+        df_work = df_work.drop_duplicates(subset=[time_col]).sort_values(time_col)
+        df_work = df_work.set_index(time_col)
+
+        expected_delta_sec = TIMEFRAME_SECONDS_MAP.get(timeframe, 60)
+        freq_str = f"{expected_delta_sec}s"
+
+        full_idx = pd.date_range(start=df_work.index.min(), end=df_work.index.max(), freq=freq_str, tz="UTC")
+        if len(full_idx) == len(df_work):
+            return df.copy()  # already complete
+
+        reindexed = df_work.reindex(full_idx)
+
+        # Forward fill close price, then fill open/high/low with close
+        reindexed["close"] = reindexed["close"].ffill().bfill()
+        reindexed["open"] = reindexed["open"].fillna(reindexed["close"])
+        reindexed["high"] = reindexed["high"].fillna(reindexed["close"])
+        reindexed["low"] = reindexed["low"].fillna(reindexed["close"])
+
+        # Fill volume metrics with 0.0
+        for col in ["volume", "quote_volume", "taker_buy_volume", "taker_buy_quote_volume"]:
+            if col in reindexed.columns:
+                reindexed[col] = reindexed[col].fillna(0.0)
+
+        if "trades_count" in reindexed.columns:
+            reindexed["trades_count"] = reindexed["trades_count"].fillna(0).astype("int64")
+
+        if "symbol" in reindexed.columns:
+            reindexed["symbol"] = reindexed["symbol"].fillna(symbol)
+        if "timeframe" in reindexed.columns:
+            reindexed["timeframe"] = reindexed["timeframe"].fillna(timeframe)
+        if "is_confirmed" in reindexed.columns:
+            reindexed["is_confirmed"] = True
+        if "source" in reindexed.columns:
+            reindexed["source"] = reindexed["source"].fillna("imputed_gap_fill")
+
+        delta = pd.Timedelta(seconds=expected_delta_sec) - pd.Timedelta(milliseconds=1)
+        reindexed = reindexed.reset_index().rename(columns={"index": time_col})
+        reindexed["close_time"] = reindexed[time_col] + delta
+
+        return reindexed
+

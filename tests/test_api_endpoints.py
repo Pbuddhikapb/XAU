@@ -29,6 +29,8 @@ def test_system_health_endpoint(client):
     assert data["symbol"] == "XAUUSDT"
     assert data["database_connected"] is True
     assert "tradfi_session_state" in data
+    assert "data_freshness" in data
+    assert "latest_candle_time" in data["data_freshness"]
 
 
 def test_market_overview_endpoint(client):

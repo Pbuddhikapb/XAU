@@ -41,3 +41,4 @@ async def test_websocket_client_receives_live_stream():
     latest = received_state_updates[-1]
     assert latest["symbol"] == "XAUUSDT"
     assert latest["mark_price"] > 0 or latest["last_price"] > 0 or latest["best_bid"] > 0
+    assert "imbalance_ratio" in client.current_depth

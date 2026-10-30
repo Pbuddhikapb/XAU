@@ -18,7 +18,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from backend.config import settings
 from backend.database import get_sync_session
-from backend.models.tables import MarketMetadata
+from backend.models.tables import FundingHistory, MarketMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -198,3 +198,28 @@ class ExchangeVerifier:
         with get_sync_session() as session:
             session.execute(stmt)
             logger.info("Persisted verified contract metadata for %s", spec["symbol"])
+
+    def fetch_and_persist_funding_history(self, limit: int = 100) -> int:
+        """Fetch historical funding rates from /fapi/v1/fundingRate and persist to funding_history table."""
+        rates = self._fetch_json(f"/fapi/v1/fundingRate?symbol={self.symbol}&limit={limit}")
+        if not isinstance(rates, list):
+            return 0
+
+        inserted_count = 0
+        with get_sync_session() as session:
+            for r in rates:
+                funding_dt = datetime.fromtimestamp(int(r["fundingTime"]) / 1000, tz=timezone.utc)
+                stmt = insert(FundingHistory).values(
+                    symbol=self.symbol,
+                    funding_time=funding_dt,
+                    funding_rate=float(r["fundingRate"]),
+                    mark_price=float(r.get("markPrice", 0.0)),
+                ).on_conflict_do_nothing(
+                    index_elements=["symbol", "funding_time"]
+                )
+                session.execute(stmt)
+                inserted_count += 1
+
+        logger.info("Persisted %d funding records for %s", inserted_count, self.symbol)
+        return inserted_count
+

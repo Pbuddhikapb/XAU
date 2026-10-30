@@ -50,6 +50,19 @@ def test_exchange_verifier_live():
         assert float(meta.step_size) == 0.001
         assert meta.is_active is True
 
+    # 5. Funding history persistence
+    funding_count = verifier.fetch_and_persist_funding_history(limit=5)
+    assert funding_count >= 1
+
+    from backend.models.tables import FundingHistory
+    with get_sync_session() as session:
+        records = session.execute(
+            select(FundingHistory).where(FundingHistory.symbol == "XAUUSDT")
+        ).scalars().all()
+        assert len(records) >= 1
+        assert records[0].funding_rate is not None
+
+
 
 def test_exchange_verifier_invalid_symbol():
     verifier = ExchangeVerifier()

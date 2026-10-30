@@ -17,7 +17,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from backend.config import settings
 from backend.database import get_async_session
-from backend.models.tables import LiveMarketState, SystemHealth
+from backend.models.tables import LiveMarketState, OrderbookSnapshot, SystemHealth
 from backend.data.session_tracker import SessionTracker
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,18 @@ class BinanceWebSocketClient:
         self.on_state_update = on_state_update
         self.is_running = False
         self._stop_event = asyncio.Event()
+
+        # Order book downsampling tracking
+        self._last_orderbook_snapshot_time = 0.0
+        self.snapshot_interval_sec = 5.0
+        self.current_depth = {
+            "bids": [],
+            "asks": [],
+            "imbalance_ratio": 0.5,
+            "spread": 0.0,
+            "top_cluster_bid": 0.0,
+            "top_cluster_ask": 0.0,
+        }
 
         # In-memory latest state buffer
         self.current_state = {
@@ -110,6 +122,41 @@ class BinanceWebSocketClient:
                 self.current_state["best_bid"] = bid
                 self.current_state["best_ask"] = ask
                 self.current_state["spread"] = round(ask - bid, 4)
+
+            elif "depth" in stream_name:
+                bids = data.get("b", [])
+                asks = data.get("a", [])
+                if bids and asks:
+                    best_bid = float(bids[0][0])
+                    best_ask = float(asks[0][0])
+                    spread = round(max(0.0, best_ask - best_bid), 4)
+
+                    total_bid_qty = sum(float(q) for _, q in bids)
+                    total_ask_qty = sum(float(q) for _, q in asks)
+                    total_qty = total_bid_qty + total_ask_qty
+                    imbalance = round(total_bid_qty / total_qty, 4) if total_qty > 0 else 0.5
+
+                    top_cluster_bid = max(float(q) for _, q in bids)
+                    top_cluster_ask = max(float(q) for _, q in asks)
+
+                    self.current_depth = {
+                        "bids": bids,
+                        "asks": asks,
+                        "imbalance_ratio": imbalance,
+                        "spread": spread,
+                        "top_cluster_bid": top_cluster_bid,
+                        "top_cluster_ask": top_cluster_ask,
+                    }
+
+                    # Periodic downsampled persistence (every 5 seconds)
+                    current_epoch = now.timestamp()
+                    if current_epoch - self._last_orderbook_snapshot_time >= self.snapshot_interval_sec:
+                        self._last_orderbook_snapshot_time = current_epoch
+                        asyncio.create_task(
+                            self._persist_orderbook_snapshot(
+                                now, bids, asks, imbalance, spread, top_cluster_bid, top_cluster_ask
+                            )
+                        )
 
             if self.on_state_update:
                 res = self.on_state_update(self.current_state)
@@ -186,6 +233,35 @@ class BinanceWebSocketClient:
                 await session.execute(stmt)
         except Exception as e:
             logger.error("Failed to persist live market state: %s", e)
+
+    async def _persist_orderbook_snapshot(
+        self,
+        timestamp: datetime,
+        bids: List[List[str]],
+        asks: List[List[str]],
+        imbalance: float,
+        spread: float,
+        top_cluster_bid: float,
+        top_cluster_ask: float,
+    ) -> None:
+        """Persist a downsampled order-book depth snapshot to orderbook_snapshots table."""
+        try:
+            stmt = insert(OrderbookSnapshot).values(
+                symbol=self.symbol.upper(),
+                timestamp=timestamp,
+                bid_depth_json=bids,
+                ask_depth_json=asks,
+                imbalance_ratio=imbalance,
+                spread=spread,
+                top_cluster_bid=top_cluster_bid,
+                top_cluster_ask=top_cluster_ask,
+            ).on_conflict_do_nothing(
+                index_elements=["symbol", "timestamp"]
+            )
+            async with get_async_session() as session:
+                await session.execute(stmt)
+        except Exception as e:
+            logger.debug("Orderbook snapshot insert suppressed: %s", e)
 
     async def run(self) -> None:
         """Main connection and auto-reconnection loop."""

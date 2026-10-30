@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import settings
@@ -58,12 +58,34 @@ async def get_system_health(session: AsyncSession = Depends(get_db_session)) -> 
 
     session_state = SessionTracker.get_session_state()
 
+    # Data freshness monitoring (Section 4)
+    latest_candle_time = None
+    candle_lag_seconds = None
+    try:
+        ts_res = await session.execute(
+            select(func.max(OHLCVCandle.open_time)).where(
+                OHLCVCandle.symbol == settings.SYMBOL,
+                OHLCVCandle.timeframe == "1m"
+            )
+        )
+        latest_candle_time = ts_res.scalar()
+        if latest_candle_time:
+            now = datetime.now(timezone.utc)
+            candle_lag_seconds = int((now - latest_candle_time).total_seconds())
+    except Exception:
+        pass
+
     return {
         "status": "HEALTHY" if db_ok else "DEGRADED",
         "symbol": settings.SYMBOL,
         "database_connected": db_ok,
         "tradfi_session_state": session_state.value,
         "underlying_active": SessionTracker.is_underlying_active(),
+        "data_freshness": {
+            "latest_candle_time": latest_candle_time.isoformat() if latest_candle_time else None,
+            "candle_lag_seconds": candle_lag_seconds,
+            "is_fresh": candle_lag_seconds is not None and candle_lag_seconds <= 120,
+        },
         "server_time_utc": datetime.now(timezone.utc).isoformat(),
         "environment": settings.ENVIRONMENT,
     }

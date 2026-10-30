@@ -3,9 +3,7 @@ SQLAlchemy ORM models defining the 14 mandatory database tables.
 Strictly conforms to Section 9 of PROJECT_SPECIFICATION.md.
 """
 
-from datetime import datetime
 import uuid
-from typing import Any, Dict, Optional
 
 from sqlalchemy import (
     BIGINT,
@@ -28,6 +26,7 @@ from backend.database import Base
 
 class MarketMetadata(Base):
     """Stores contract parameters, precision filters, and operational specifications."""
+
     __tablename__ = "market_metadata"
 
     symbol = Column(VARCHAR(20), primary_key=True)
@@ -50,6 +49,7 @@ class MarketMetadata(Base):
 
 class OHLCVCandle(Base):
     """Authoritative storage for OHLCV candles across all primary and secondary timeframes."""
+
     __tablename__ = "ohlcv_candles"
 
     symbol = Column(VARCHAR(20), nullable=False)
@@ -76,6 +76,7 @@ class OHLCVCandle(Base):
 
 class LiveMarketState(Base):
     """Single-row latest snapshot of live contract, mark, index, basis, and TradFi state."""
+
     __tablename__ = "live_market_state"
 
     symbol = Column(VARCHAR(20), primary_key=True)
@@ -94,6 +95,7 @@ class LiveMarketState(Base):
 
 class MarkIndexPrice(Base):
     """Synchronized price series tracking contract, mark, and index price divergence."""
+
     __tablename__ = "mark_index_prices"
 
     symbol = Column(VARCHAR(20), nullable=False)
@@ -111,6 +113,7 @@ class MarkIndexPrice(Base):
 
 class OrderbookSnapshot(Base):
     """Downsampled order book depth snapshots for liquidity and spread analysis."""
+
     __tablename__ = "orderbook_snapshots"
 
     symbol = Column(VARCHAR(20), nullable=False)
@@ -130,6 +133,7 @@ class OrderbookSnapshot(Base):
 
 class FundingHistory(Base):
     """Settled 8-hour funding rates."""
+
     __tablename__ = "funding_history"
 
     symbol = Column(VARCHAR(20), nullable=False)
@@ -137,13 +141,12 @@ class FundingHistory(Base):
     funding_rate = Column(NUMERIC(12, 8), nullable=False)
     mark_price = Column(NUMERIC(18, 4), nullable=False)
 
-    __table_args__ = (
-        PrimaryKeyConstraint("symbol", "funding_time"),
-    )
+    __table_args__ = (PrimaryKeyConstraint("symbol", "funding_time"),)
 
 
 class IndicatorSnapshot(Base):
     """Immutable calculation records for every confirmed candle close."""
+
     __tablename__ = "indicator_snapshots"
 
     symbol = Column(VARCHAR(20), nullable=False)
@@ -176,25 +179,26 @@ class IndicatorSnapshot(Base):
 
 class StructureEvent(Base):
     """Market structure events (Swing High/Low, BOS, CHoCH)."""
+
     __tablename__ = "structure_events"
 
     id = Column(BIGINT, primary_key=True, autoincrement=True)
     symbol = Column(VARCHAR(20), nullable=False)
     timeframe = Column(VARCHAR(10), nullable=False)
     event_time = Column(DateTime(timezone=True), nullable=False)
-    event_type = Column(VARCHAR(20), nullable=False)  # SWING_HIGH, SWING_LOW, BOS_BULL, BOS_BEAR, CHOCH_BULL, CHOCH_BEAR
+    # Event types: SWING_HIGH, SWING_LOW, BOS_BULL, BOS_BEAR, CHOCH_BULL, CHOCH_BEAR
+    event_type = Column(VARCHAR(20), nullable=False)
     price = Column(NUMERIC(18, 4), nullable=False)
     invalidated_level = Column(NUMERIC(18, 4), nullable=True)
     confirmed_candle_time = Column(DateTime(timezone=True), nullable=False)
     metadata_json = Column("metadata", JSONB, nullable=True)
 
-    __table_args__ = (
-        Index("idx_structure_time", "symbol", "timeframe", "event_time"),
-    )
+    __table_args__ = (Index("idx_structure_time", "symbol", "timeframe", "event_time"),)
 
 
 class MarketAnalysis(Base):
     """Engine A output: Market direction, bullish/bearish scores, and supporting evidence."""
+
     __tablename__ = "market_analysis"
 
     id = Column(BIGINT, primary_key=True, autoincrement=True)
@@ -218,20 +222,20 @@ class MarketAnalysis(Base):
     methodology_version = Column(VARCHAR(20), nullable=False)
     is_live = Column(BOOLEAN, nullable=False, default=True)
 
-    __table_args__ = (
-        Index("idx_analysis_time", "symbol", "assessment_time"),
-    )
+    __table_args__ = (Index("idx_analysis_time", "symbol", "assessment_time"),)
 
 
 class TradeSetup(Base):
     """Engine B output: Specific trade setups with levels and invalidation."""
+
     __tablename__ = "trade_setups"
 
     id = Column(BIGINT, primary_key=True, autoincrement=True)
     setup_id = Column(UUID(as_uuid=True), default=uuid.uuid4, unique=True, nullable=False)
     symbol = Column(VARCHAR(20), nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False)
-    status = Column(VARCHAR(20), nullable=False)  # POTENTIAL LONG, CONFIRMED LONG, POTENTIAL SHORT, CONFIRMED SHORT, INVALIDATED, EXPIRED
+    # Statuses: POTENTIAL LONG/SHORT, CONFIRMED LONG/SHORT, INVALIDATED, EXPIRED
+    status = Column(VARCHAR(20), nullable=False)
     setup_type = Column(VARCHAR(50), nullable=False)
     direction = Column(VARCHAR(10), nullable=False)  # LONG, SHORT
     timeframe = Column(VARCHAR(10), nullable=False)
@@ -248,13 +252,12 @@ class TradeSetup(Base):
     estimated_fees_pct = Column(NUMERIC(6, 4), nullable=False)
     methodology_version = Column(VARCHAR(20), nullable=False)
 
-    __table_args__ = (
-        Index("idx_setups_time", "symbol", "created_at"),
-    )
+    __table_args__ = (Index("idx_setups_time", "symbol", "created_at"),)
 
 
 class SignalOutcome(Base):
     """Historical tracking of trade setup and signal performance."""
+
     __tablename__ = "signal_outcomes"
 
     id = Column(BIGINT, primary_key=True, autoincrement=True)
@@ -267,13 +270,12 @@ class SignalOutcome(Base):
     realized_rr = Column(NUMERIC(6, 2), nullable=True)
     pnl_percent = Column(NUMERIC(8, 4), nullable=True)
 
-    __table_args__ = (
-        Index("idx_outcomes_setup", "setup_id"),
-    )
+    __table_args__ = (Index("idx_outcomes_setup", "setup_id"),)
 
 
 class BacktestRun(Base):
     """Backtesting execution log."""
+
     __tablename__ = "backtest_runs"
 
     run_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -290,6 +292,7 @@ class BacktestRun(Base):
 
 class BacktestMetric(Base):
     """Detailed performance metrics for a backtest run."""
+
     __tablename__ = "backtest_metrics"
 
     run_id = Column(UUID(as_uuid=True), ForeignKey("backtest_runs.run_id"), primary_key=True)
@@ -309,6 +312,7 @@ class BacktestMetric(Base):
 
 class SystemHealth(Base):
     """System health telemetry, heartbeat, data lag, and reconnection logs."""
+
     __tablename__ = "system_health"
 
     id = Column(BIGINT, primary_key=True, autoincrement=True)
@@ -318,6 +322,4 @@ class SystemHealth(Base):
     lag_ms = Column(INT, nullable=False)
     details = Column(JSONB, nullable=True)
 
-    __table_args__ = (
-        Index("idx_health_time", "timestamp"),
-    )
+    __table_args__ = (Index("idx_health_time", "timestamp"),)

@@ -4,9 +4,12 @@ Connects to live testnet stream for XAUUSDT, receives frames, and verifies state
 """
 
 import asyncio
+import contextlib
+
 import pytest
 
 from backend.data.websocket_client import BinanceWebSocketClient
+from backend.database import async_engine
 
 
 @pytest.mark.asyncio
@@ -29,13 +32,14 @@ async def test_websocket_client_receives_live_stream():
             break
 
     client.stop()
-    await asyncio.sleep(1.2)  # Allow timeout loop to exit cleanly
-    if not task.done():
+    try:
+        await asyncio.wait_for(task, timeout=3.0)
+    except (TimeoutError, asyncio.CancelledError):
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
+    finally:
+        await async_engine.dispose()
 
     assert len(received_state_updates) > 0, "Failed to receive live WebSocket stream updates"
     latest = received_state_updates[-1]

@@ -3,24 +3,27 @@ FastAPI application entrypoint for Binance XAUUSDT Market Intelligence System.
 Provides versioned REST endpoints as mandated by Section 10 of PROJECT_SPECIFICATION.md.
 """
 
+import logging
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import settings
+from backend.data.session_tracker import SessionTracker
 from backend.database import get_db_session, init_db
 from backend.models.tables import (
     LiveMarketState,
     MarketMetadata,
     OHLCVCandle,
-    SystemHealth,
 )
-from backend.data.session_tracker import SessionTracker
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -47,13 +50,14 @@ app.add_middleware(
 
 
 @app.get("/api/v1/system/health")
-async def get_system_health(session: AsyncSession = Depends(get_db_session)) -> Dict[str, Any]:
+async def get_system_health(session: AsyncSession = Depends(get_db_session)) -> dict[str, Any]:
     """Retrieve system health status, DB connectivity, and current TradFi session state."""
     db_ok = False
     try:
         res = await session.execute(text("SELECT 1"))
         db_ok = res.scalar() == 1
-    except Exception as e:
+    except (SQLAlchemyError, OSError) as e:
+        logger.warning("Database connectivity check failed: %s", e)
         db_ok = False
 
     session_state = SessionTracker.get_session_state()
@@ -64,16 +68,15 @@ async def get_system_health(session: AsyncSession = Depends(get_db_session)) -> 
     try:
         ts_res = await session.execute(
             select(func.max(OHLCVCandle.open_time)).where(
-                OHLCVCandle.symbol == settings.SYMBOL,
-                OHLCVCandle.timeframe == "1m"
+                OHLCVCandle.symbol == settings.SYMBOL, OHLCVCandle.timeframe == "1m"
             )
         )
         latest_candle_time = ts_res.scalar()
         if latest_candle_time:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             candle_lag_seconds = int((now - latest_candle_time).total_seconds())
-    except Exception:
-        pass
+    except (SQLAlchemyError, OSError) as e:
+        logger.warning("Data freshness query failed: %s", e)
 
     return {
         "status": "HEALTHY" if db_ok else "DEGRADED",
@@ -86,30 +89,25 @@ async def get_system_health(session: AsyncSession = Depends(get_db_session)) -> 
             "candle_lag_seconds": candle_lag_seconds,
             "is_fresh": candle_lag_seconds is not None and candle_lag_seconds <= 120,
         },
-        "server_time_utc": datetime.now(timezone.utc).isoformat(),
+        "server_time_utc": datetime.now(UTC).isoformat(),
         "environment": settings.ENVIRONMENT,
     }
 
 
 @app.get("/api/v1/market/overview")
-async def get_market_overview(session: AsyncSession = Depends(get_db_session)) -> Dict[str, Any]:
+async def get_market_overview(session: AsyncSession = Depends(get_db_session)) -> dict[str, Any]:
     """Retrieve contract metadata and latest live market state."""
     # Fetch metadata
-    meta_res = await session.execute(
-        select(MarketMetadata).where(MarketMetadata.symbol == settings.SYMBOL)
-    )
+    meta_res = await session.execute(select(MarketMetadata).where(MarketMetadata.symbol == settings.SYMBOL))
     meta = meta_res.scalar_one_or_none()
 
     # Fetch live state
-    state_res = await session.execute(
-        select(LiveMarketState).where(LiveMarketState.symbol == settings.SYMBOL)
-    )
+    state_res = await session.execute(select(LiveMarketState).where(LiveMarketState.symbol == settings.SYMBOL))
     state = state_res.scalar_one_or_none()
 
     if not meta and not state:
         raise HTTPException(
-            status_code=404,
-            detail=f"No market data initialized yet for {settings.SYMBOL}. Run verification first."
+            status_code=404, detail=f"No market data initialized yet for {settings.SYMBOL}. Run verification first."
         )
 
     return {
@@ -121,7 +119,9 @@ async def get_market_overview(session: AsyncSession = Depends(get_db_session)) -
             "step_size": float(meta.step_size) if meta else 0.001,
             "min_notional": float(meta.min_notional) if meta else 5.0,
             "is_active": meta.is_active if meta else True,
-        } if meta else None,
+        }
+        if meta
+        else None,
         "live_state": {
             "last_price": float(state.last_price),
             "mark_price": float(state.mark_price),
@@ -134,7 +134,9 @@ async def get_market_overview(session: AsyncSession = Depends(get_db_session)) -
             "spread": float(state.spread),
             "tradfi_session_state": state.tradfi_session_state,
             "last_update": state.last_update.isoformat(),
-        } if state else None,
+        }
+        if state
+        else None,
     }
 
 
@@ -142,8 +144,8 @@ async def get_market_overview(session: AsyncSession = Depends(get_db_session)) -
 async def get_market_candles(
     timeframe: str = Query("1h", description="Candle timeframe (e.g. 1m, 5m, 15m, 1h, 4h, 1d)"),
     limit: int = Query(250, ge=1, le=1500, description="Number of candles to return"),
-    session: AsyncSession = Depends(get_db_session)
-) -> List[Dict[str, Any]]:
+    session: AsyncSession = Depends(get_db_session),
+) -> list[dict[str, Any]]:
     """Retrieve validated historical OHLCV candles."""
     stmt = (
         select(OHLCVCandle)
@@ -176,7 +178,7 @@ async def get_market_candles(
 
 
 @app.get("/api/v1/market/prices")
-async def get_market_prices(session: AsyncSession = Depends(get_db_session)) -> Dict[str, Any]:
+async def get_market_prices(session: AsyncSession = Depends(get_db_session)) -> dict[str, Any]:
     """Retrieve current contract price, mark price, and index price."""
     stmt = select(LiveMarketState).where(LiveMarketState.symbol == settings.SYMBOL)
     res = await session.execute(stmt)

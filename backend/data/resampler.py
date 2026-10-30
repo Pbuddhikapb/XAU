@@ -6,11 +6,11 @@ Enforces Section 4 & Section 6 of PROJECT_SPECIFICATION.md:
 - Discards unfinished/incomplete higher timeframe candles to prevent repainting.
 """
 
-from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any
+
 import pandas as pd
 
-from backend.data.candle_validator import CandleValidator, TIMEFRAME_SECONDS_MAP
+from backend.data.candle_validator import TIMEFRAME_SECONDS_MAP, CandleValidator
 
 PANDAS_OFFSET_MAP = {
     "1m": "1min",
@@ -37,7 +37,7 @@ class CandleResampler:
         target_timeframe: str,
         symbol: str = "XAUUSDT",
         only_confirmed: bool = True,
-        recover_gaps: bool = False
+        recover_gaps: bool = False,
     ) -> pd.DataFrame:
         """
         Resample 1-minute OHLCV DataFrame into target timeframe.
@@ -63,8 +63,15 @@ class CandleResampler:
 
         # Explicit numeric conversion
         numeric_cols = [
-            "open", "high", "low", "close", "volume",
-            "quote_volume", "trades_count", "taker_buy_volume", "taker_buy_quote_volume"
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "quote_volume",
+            "trades_count",
+            "taker_buy_volume",
+            "taker_buy_quote_volume",
         ]
         for col in numeric_cols:
             if col in df.columns:
@@ -109,29 +116,33 @@ class CandleResampler:
 
         # Reorder columns
         output_cols = [
-            "symbol", "timeframe", "open_time", "close_time",
-            "open", "high", "low", "close", "volume",
-            "quote_volume", "trades_count", "taker_buy_volume",
-            "taker_buy_quote_volume", "is_confirmed"
+            "symbol",
+            "timeframe",
+            "open_time",
+            "close_time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "quote_volume",
+            "trades_count",
+            "taker_buy_volume",
+            "taker_buy_quote_volume",
+            "is_confirmed",
         ]
         return resampled[output_cols]
 
     @staticmethod
     def reconcile_with_native(
-        resampled_df: pd.DataFrame,
-        native_df: pd.DataFrame,
-        price_tolerance: float = 0.05
-    ) -> Dict[str, any]:
+        resampled_df: pd.DataFrame, native_df: pd.DataFrame, price_tolerance: float = 0.05
+    ) -> dict[str, Any]:
         """
         Reconcile synthetic resampled candles against native Binance exchange candles.
         Enforces Section 4 'reconcile against native exchange candles'.
         """
         if resampled_df.empty or native_df.empty:
-            return {
-                "matched_bars": 0,
-                "is_reconciled": False,
-                "error": "Empty dataset provided for reconciliation"
-            }
+            return {"matched_bars": 0, "is_reconciled": False, "error": "Empty dataset provided for reconciliation"}
 
         r_df = resampled_df.copy()
         n_df = native_df.copy()
@@ -140,17 +151,13 @@ class CandleResampler:
             if not pd.api.types.is_datetime64_any_dtype(d["open_time"]):
                 d["open_time"] = pd.to_datetime(d["open_time"], utc=True)
 
-        merged = pd.merge(
-            r_df, n_df,
-            on="open_time",
-            suffixes=("_resampled", "_native")
-        )
+        merged = pd.merge(r_df, n_df, on="open_time", suffixes=("_resampled", "_native"))
 
         if merged.empty:
             return {
                 "matched_bars": 0,
                 "is_reconciled": False,
-                "error": "No overlapping timestamps between resampled and native datasets"
+                "error": "No overlapping timestamps between resampled and native datasets",
             }
 
         # Compare prices
@@ -159,15 +166,13 @@ class CandleResampler:
         low_diff = (merged["low_resampled"] - merged["low_native"]).abs()
         close_diff = (merged["close_resampled"] - merged["close_native"]).abs()
 
-        max_price_diff = float(max(
-            open_diff.max(), high_diff.max(), low_diff.max(), close_diff.max()
-        ))
+        max_price_diff = float(max(open_diff.max(), high_diff.max(), low_diff.max(), close_diff.max()))
 
         price_matches = (
-            (open_diff <= price_tolerance) &
-            (high_diff <= price_tolerance) &
-            (low_diff <= price_tolerance) &
-            (close_diff <= price_tolerance)
+            (open_diff <= price_tolerance)
+            & (high_diff <= price_tolerance)
+            & (low_diff <= price_tolerance)
+            & (close_diff <= price_tolerance)
         )
 
         match_count = int(price_matches.sum())
@@ -189,4 +194,3 @@ class CandleResampler:
             "max_volume_diff_pct": float(vol_diff_pct),
             "is_reconciled": is_reconciled,
         }
-

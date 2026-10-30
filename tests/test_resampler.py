@@ -3,9 +3,7 @@ Unit tests for CandleResampler.
 Validates multi-timeframe aggregation, boundary alignment, and incomplete candle rejection.
 """
 
-from datetime import datetime, timezone
 import pandas as pd
-import pytest
 
 from backend.data.resampler import CandleResampler
 
@@ -16,25 +14,27 @@ def generate_mock_1m_data(count: int = 60, start_time: str = "2026-10-30 00:00:0
     data = []
     base_price = 4000.0
     for i, t in enumerate(times):
-        o = base_price + i
-        h = o + 2.0
-        l = o - 1.0
-        c = o + 1.0
-        v = 10.0
-        qv = v * c
+        open_val = base_price + i
+        high_val = open_val + 2.0
+        low_val = open_val - 1.0
+        close_val = open_val + 1.0
+        vol_val = 10.0
+        qv = vol_val * close_val
         tbv = 6.0
-        data.append({
-            "open_time": t,
-            "open": o,
-            "high": h,
-            "low": l,
-            "close": c,
-            "volume": v,
-            "quote_volume": qv,
-            "trades_count": 50,
-            "taker_buy_volume": tbv,
-            "taker_buy_quote_volume": tbv * c,
-        })
+        data.append(
+            {
+                "open_time": t,
+                "open": open_val,
+                "high": high_val,
+                "low": low_val,
+                "close": close_val,
+                "volume": vol_val,
+                "quote_volume": qv,
+                "trades_count": 50,
+                "taker_buy_volume": tbv,
+                "taker_buy_quote_volume": tbv * close_val,
+            }
+        )
     return pd.DataFrame(data)
 
 
@@ -102,10 +102,11 @@ def test_resample_with_gap_recovery():
     df_gap = df_1m.drop(index=[3]).reset_index(drop=True)
 
     # Without gap recovery: first 5m bar has only 4 candles, so it gets dropped
-    df_5m_no_rec = CandleResampler.resample_ohlcv(df_gap, target_timeframe="5m", only_confirmed=True, recover_gaps=False)
+    df_5m_no_rec = CandleResampler.resample_ohlcv(
+        df_gap, target_timeframe="5m", only_confirmed=True, recover_gaps=False
+    )
     assert len(df_5m_no_rec) == 1  # Only second 5m bar survived
 
     # With gap recovery: missing 1m bar is imputed (0 vol), so both 5m bars survive
     df_5m_rec = CandleResampler.resample_ohlcv(df_gap, target_timeframe="5m", only_confirmed=True, recover_gaps=True)
     assert len(df_5m_rec) == 2
-

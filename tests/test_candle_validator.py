@@ -3,9 +3,7 @@ Unit tests for CandleValidator.
 Tests OHLC invariant enforcement, volume checks, duplicate detection, and gap detection.
 """
 
-from datetime import datetime, timezone
 import pandas as pd
-import pytest
 
 from backend.data.candle_validator import CandleValidator
 

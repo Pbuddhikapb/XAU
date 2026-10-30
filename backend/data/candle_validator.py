@@ -7,14 +7,13 @@ Enforces Principle 8, 11, 12, 14 of PROJECT_SPECIFICATION.md:
 - Gap detection, missing candle identification, and duplicate detection.
 """
 
-from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Any
+
 import pandas as pd
 
 
 class CandleValidationError(Exception):
     """Raised when candle data violates structural or financial integrity checks."""
-    pass
 
 
 TIMEFRAME_SECONDS_MAP = {
@@ -37,7 +36,7 @@ class CandleValidator:
     """Validates individual candles and time series integrity."""
 
     @staticmethod
-    def validate_single_candle(candle: Dict[str, any]) -> Tuple[bool, Optional[str]]:
+    def validate_single_candle(candle: dict[str, Any]) -> tuple[bool, str | None]:
         """
         Validate single candle OHLCV invariants.
         Returns (is_valid, error_reason).
@@ -70,15 +69,13 @@ class CandleValidator:
                 return False, f"Taker buy volume ({taker_buy_vol}) exceeds total volume ({volume})"
 
             return True, None
-        except Exception as e:
+        except (ValueError, KeyError, TypeError) as e:
             return False, f"Malformed candle payload: {e}"
 
     @staticmethod
     def find_gaps_and_duplicates(
-        df: pd.DataFrame,
-        timeframe: str = "1m",
-        time_col: str = "open_time"
-    ) -> Dict[str, any]:
+        df: pd.DataFrame, timeframe: str = "1m", time_col: str = "open_time"
+    ) -> dict[str, Any]:
         """
         Analyze a sorted DataFrame of candles for gaps and duplicates.
         Requires DataFrame to have UTC datetime or millisecond timestamp column.
@@ -118,11 +115,9 @@ class CandleValidator:
                 gap_start = unique_series.iloc[idx - 1]
                 gap_end = unique_series.iloc[idx]
                 missing_bars = int((gap_end - gap_start) / expected_delta) - 1
-                gap_intervals.append({
-                    "start": gap_start.isoformat(),
-                    "end": gap_end.isoformat(),
-                    "missing_candles": missing_bars
-                })
+                gap_intervals.append(
+                    {"start": gap_start.isoformat(), "end": gap_end.isoformat(), "missing_candles": missing_bars}
+                )
 
         return {
             "total_candles": len(df),
@@ -134,10 +129,7 @@ class CandleValidator:
 
     @staticmethod
     def recover_missing_candles(
-        df: pd.DataFrame,
-        timeframe: str = "1m",
-        symbol: str = "XAUUSDT",
-        time_col: str = "open_time"
+        df: pd.DataFrame, timeframe: str = "1m", symbol: str = "XAUUSDT", time_col: str = "open_time"
     ) -> pd.DataFrame:
         """
         Recover missing candles by reindexing to a complete uniform time grid.
@@ -150,9 +142,7 @@ class CandleValidator:
         df_work = df.copy()
         if not pd.api.types.is_datetime64_any_dtype(df_work[time_col]):
             df_work[time_col] = pd.to_datetime(
-                df_work[time_col],
-                unit="ms" if pd.api.types.is_numeric_dtype(df_work[time_col]) else None,
-                utc=True
+                df_work[time_col], unit="ms" if pd.api.types.is_numeric_dtype(df_work[time_col]) else None, utc=True
             )
 
         df_work = df_work.drop_duplicates(subset=[time_col]).sort_values(time_col)
@@ -195,4 +185,3 @@ class CandleValidator:
         reindexed["close_time"] = reindexed[time_col] + delta
 
         return reindexed
-

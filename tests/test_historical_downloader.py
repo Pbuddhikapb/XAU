@@ -3,7 +3,6 @@ Integration tests for HistoricalDownloader.
 Tests downloading real archive from data.binance.vision, parsing, and bulk inserting into PostgreSQL.
 """
 
-import pytest
 from sqlalchemy import func, select
 
 from backend.data.historical_downloader import HistoricalDownloader
@@ -33,10 +32,9 @@ def test_historical_downloader_daily_archive():
     # Verify rows in PostgreSQL
     with get_sync_session() as session:
         db_count = session.execute(
-            select(func.count()).select_from(OHLCVCandle).where(
-                OHLCVCandle.symbol == "XAUUSDT",
-                OHLCVCandle.timeframe == "1m"
-            )
+            select(func.count())
+            .select_from(OHLCVCandle)
+            .where(OHLCVCandle.symbol == "XAUUSDT", OHLCVCandle.timeframe == "1m")
         ).scalar()
         assert db_count >= 1440
 
@@ -53,11 +51,9 @@ def test_historical_downloader_mark_index_day():
     assert count == 1440
 
     from backend.models.tables import MarkIndexPrice
+
     with get_sync_session() as session:
         db_count = session.execute(
-            select(func.count()).select_from(MarkIndexPrice).where(
-                MarkIndexPrice.symbol == "XAUUSDT"
-            )
+            select(func.count()).select_from(MarkIndexPrice).where(MarkIndexPrice.symbol == "XAUUSDT")
         ).scalar()
         assert db_count >= 1440
-

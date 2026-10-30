@@ -3,8 +3,8 @@ Database connectivity and session management.
 Provides both asynchronous (asyncpg) and synchronous (psycopg2) engine sessions.
 """
 
+from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
-from typing import AsyncGenerator, Generator
 
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import (
@@ -20,7 +20,6 @@ from backend.config import settings
 
 class Base(DeclarativeBase):
     """Base class for all SQLAlchemy ORM models."""
-    pass
 
 
 # Asynchronous engine & session
@@ -77,7 +76,6 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
         except Exception:
             await session.rollback()
             raise
-
 
 
 @contextmanager

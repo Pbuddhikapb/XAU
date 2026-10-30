@@ -3,11 +3,11 @@ API integration tests for FastAPI backend endpoints.
 Verifies GET /api/v1/system/health, /market/overview, /market/candles, /market/prices.
 """
 
-from fastapi.testclient import TestClient
 import pytest
+from fastapi.testclient import TestClient
 
-from backend.main import app
 from backend.data.exchange_verifier import ExchangeVerifier
+from backend.main import app
 
 
 @pytest.fixture(scope="module")

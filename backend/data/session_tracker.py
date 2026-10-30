@@ -4,12 +4,11 @@ Monitors underlying commodity market hours (LBMA / COMEX / dxFeed / Massive)
 to distinguish active gold discovery from frozen index / weekend cryptocurrency trading.
 """
 
-from datetime import datetime, time, timezone
-from enum import Enum
-from typing import Dict, Optional
+from datetime import UTC, datetime, time
+from enum import StrEnum
 
 
-class TradFiSessionState(str, Enum):
+class TradFiSessionState(StrEnum):
     OPEN = "OPEN"
     DAILY_BREAK = "DAILY_BREAK"
     WEEKEND_CLOSED = "WEEKEND_CLOSED"
@@ -20,7 +19,7 @@ class SessionTracker:
     """Tracks TradFi physical/futures gold trading hours in UTC."""
 
     @staticmethod
-    def get_session_state(dt: Optional[datetime] = None) -> TradFiSessionState:
+    def get_session_state(dt: datetime | None = None) -> TradFiSessionState:
         """
         Determine TradFi physical gold market status at a given UTC datetime.
         Standard Gold Trading Hours:
@@ -29,9 +28,9 @@ class SessionTracker:
         - Daily break: Monday through Thursday 22:00 - 23:00 UTC.
         """
         if dt is None:
-            dt = datetime.now(timezone.utc)
+            dt = datetime.now(UTC)
         elif dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
 
         weekday = dt.weekday()  # Monday=0, Tuesday=1, ... Friday=4, Saturday=5, Sunday=6
         current_time = dt.time()
@@ -51,6 +50,6 @@ class SessionTracker:
         return TradFiSessionState.OPEN
 
     @staticmethod
-    def is_underlying_active(dt: Optional[datetime] = None) -> bool:
+    def is_underlying_active(dt: datetime | None = None) -> bool:
         """True only if underlying institutional gold feeds (dxfeed/massive) are actively quoting."""
         return SessionTracker.get_session_state(dt) == TradFiSessionState.OPEN

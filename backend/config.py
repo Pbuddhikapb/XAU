@@ -4,7 +4,7 @@ Loads environment variables and sets fixed architectural constants.
 """
 
 from pathlib import Path
-from typing import List
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,8 +18,8 @@ class Settings(BaseSettings):
     CONTRACT_TYPE: str = "TRADIFI_PERPETUAL"
 
     # Primary timeframes mandated by Specification (Section 6)
-    PRIMARY_TIMEFRAMES: List[str] = ["1d", "4h", "1h", "15m", "5m"]
-    SECONDARY_TIMEFRAMES: List[str] = ["1m", "30m", "2h"]
+    PRIMARY_TIMEFRAMES: list[str] = ["1d", "4h", "1h", "15m", "5m"]
+    SECONDARY_TIMEFRAMES: list[str] = ["1m", "30m", "2h"]
     CANONICAL_TIMEFRAME: str = "1m"
 
     # Database URLs
@@ -49,9 +49,7 @@ class Settings(BaseSettings):
     CONTRACT_ONBOARD_TIME_MS: int = 1765440300000
 
     model_config = SettingsConfigDict(
-        env_file=str(Path(__file__).parent.parent / ".env"),
-        env_file_encoding="utf-8",
-        extra="ignore"
+        env_file=str(Path(__file__).parent.parent / ".env"), env_file_encoding="utf-8", extra="ignore"
     )
 
 

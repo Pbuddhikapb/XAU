@@ -6,19 +6,21 @@ and live state tracking in PostgreSQL live_market_state.
 """
 
 import asyncio
-from datetime import datetime, timezone
 import json
 import logging
-from typing import Any, Callable, Dict, List, Optional
-import websockets
-from websockets.exceptions import ConnectionClosed
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import SQLAlchemyError
+from websockets.asyncio.client import connect
+from websockets.exceptions import ConnectionClosed
 
 from backend.config import settings
-from backend.database import get_async_session
-from backend.models.tables import LiveMarketState, OrderbookSnapshot, SystemHealth
 from backend.data.session_tracker import SessionTracker
+from backend.database import get_async_session
+from backend.models.tables import LiveMarketState, OrderbookSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +30,9 @@ class BinanceWebSocketClient:
 
     def __init__(
         self,
-        base_ws_url: Optional[str] = None,
-        on_candle_close: Optional[Callable[[Dict[str, Any]], Any]] = None,
-        on_state_update: Optional[Callable[[Dict[str, Any]], Any]] = None,
+        base_ws_url: str | None = None,
+        on_candle_close: Callable[[dict[str, Any]], Any] | None = None,
+        on_state_update: Callable[[dict[str, Any]], Any] | None = None,
     ):
         self.base_url = (base_ws_url or settings.BINANCE_TESTNET_WS_URL).rstrip("/")
         self.symbol = settings.SYMBOL.lower()
@@ -42,7 +44,7 @@ class BinanceWebSocketClient:
         # Order book downsampling tracking
         self._last_orderbook_snapshot_time = 0.0
         self.snapshot_interval_sec = 5.0
-        self.current_depth = {
+        self.current_depth: dict[str, Any] = {
             "bids": [],
             "asks": [],
             "imbalance_ratio": 0.5,
@@ -52,19 +54,19 @@ class BinanceWebSocketClient:
         }
 
         # In-memory latest state buffer
-        self.current_state = {
+        self.current_state: dict[str, Any] = {
             "symbol": settings.SYMBOL.upper(),
             "last_price": 0.0,
             "mark_price": 0.0,
             "index_price": 0.0,
             "basis": 0.0,
             "funding_rate": 0.0,
-            "next_funding_time": datetime.now(timezone.utc),
+            "next_funding_time": datetime.now(UTC),
             "best_bid": 0.0,
             "best_ask": 0.0,
             "spread": 0.0,
             "tradfi_session_state": "OPEN",
-            "last_update": datetime.now(timezone.utc),
+            "last_update": datetime.now(UTC),
         }
 
     def get_stream_url(self) -> str:
@@ -77,14 +79,16 @@ class BinanceWebSocketClient:
         ]
         return f"{self.base_url}/stream?streams={'/'.join(streams)}"
 
-    async def _handle_message(self, message: str) -> None:
+    async def _handle_message(self, message: str | bytes) -> None:
         """Process incoming combined stream JSON payload."""
         try:
+            if isinstance(message, bytes):
+                message = message.decode("utf-8")
             payload = json.loads(message)
             stream_name = payload.get("stream", "")
             data = payload.get("data", {})
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             self.current_state["last_update"] = now
             self.current_state["tradfi_session_state"] = SessionTracker.get_session_state(now).value
 
@@ -92,8 +96,9 @@ class BinanceWebSocketClient:
                 k = data.get("k", {})
                 close_price = float(k.get("c", 0.0))
                 self.current_state["last_price"] = close_price
-                if self.current_state["index_price"] > 0:
-                    self.current_state["basis"] = close_price - self.current_state["index_price"]
+                index_price = float(self.current_state.get("index_price") or 0.0)
+                if index_price > 0:
+                    self.current_state["basis"] = close_price - index_price
 
                 # Check if 1m candle closed
                 is_closed = k.get("x", False)
@@ -110,11 +115,10 @@ class BinanceWebSocketClient:
                 self.current_state["index_price"] = index
                 self.current_state["funding_rate"] = funding
                 if next_funding_ms > 0:
-                    self.current_state["next_funding_time"] = datetime.fromtimestamp(
-                        next_funding_ms / 1000, tz=timezone.utc
-                    )
-                if self.current_state["last_price"] > 0 and index > 0:
-                    self.current_state["basis"] = self.current_state["last_price"] - index
+                    self.current_state["next_funding_time"] = datetime.fromtimestamp(next_funding_ms / 1000, tz=UTC)
+                last_price = float(self.current_state.get("last_price") or 0.0)
+                if last_price > 0 and index > 0:
+                    self.current_state["basis"] = last_price - index
 
             elif "bookTicker" in stream_name:
                 bid = float(data.get("b", 0.0))
@@ -163,17 +167,17 @@ class BinanceWebSocketClient:
                 if asyncio.iscoroutine(res):
                     await res
 
-        except Exception as e:
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
             logger.error("Error processing stream message: %s", e)
 
-    async def _notify_candle_close(self, k: Dict[str, Any]) -> None:
+    async def _notify_candle_close(self, k: dict[str, Any]) -> None:
         """Notify registered listener on confirmed 1m candle close."""
         try:
             candle_dict = {
                 "symbol": settings.SYMBOL.upper(),
                 "timeframe": "1m",
-                "open_time": datetime.fromtimestamp(int(k["t"]) / 1000, tz=timezone.utc),
-                "close_time": datetime.fromtimestamp(int(k["T"]) / 1000, tz=timezone.utc),
+                "open_time": datetime.fromtimestamp(int(k["t"]) / 1000, tz=UTC),
+                "close_time": datetime.fromtimestamp(int(k["T"]) / 1000, tz=UTC),
                 "open": float(k["o"]),
                 "high": float(k["h"]),
                 "low": float(k["l"]),
@@ -190,55 +194,59 @@ class BinanceWebSocketClient:
                 res = self.on_candle_close(candle_dict)
                 if asyncio.iscoroutine(res):
                     await res
-        except Exception as e:
+        except (KeyError, ValueError, TypeError) as e:
             logger.error("Error dispatching on_candle_close: %s", e)
 
     async def persist_state_snapshot(self) -> None:
         """Upsert current market state snapshot to PostgreSQL live_market_state."""
-        if self.current_state["last_price"] <= 0:
+        if float(self.current_state.get("last_price") or 0.0) <= 0:
             return
 
         try:
-            stmt = insert(LiveMarketState).values(
-                symbol=self.current_state["symbol"],
-                last_price=self.current_state["last_price"],
-                mark_price=self.current_state["mark_price"],
-                index_price=self.current_state["index_price"],
-                basis=self.current_state["basis"],
-                funding_rate=self.current_state["funding_rate"],
-                next_funding_time=self.current_state["next_funding_time"],
-                best_bid=self.current_state["best_bid"],
-                best_ask=self.current_state["best_ask"],
-                spread=self.current_state["spread"],
-                tradfi_session_state=self.current_state["tradfi_session_state"],
-                last_update=self.current_state["last_update"],
-            ).on_conflict_do_update(
-                index_elements=["symbol"],
-                set_={
-                    "last_price": self.current_state["last_price"],
-                    "mark_price": self.current_state["mark_price"],
-                    "index_price": self.current_state["index_price"],
-                    "basis": self.current_state["basis"],
-                    "funding_rate": self.current_state["funding_rate"],
-                    "next_funding_time": self.current_state["next_funding_time"],
-                    "best_bid": self.current_state["best_bid"],
-                    "best_ask": self.current_state["best_ask"],
-                    "spread": self.current_state["spread"],
-                    "tradfi_session_state": self.current_state["tradfi_session_state"],
-                    "last_update": self.current_state["last_update"],
-                }
+            stmt = (
+                insert(LiveMarketState)
+                .values(
+                    symbol=self.current_state["symbol"],
+                    last_price=self.current_state["last_price"],
+                    mark_price=self.current_state["mark_price"],
+                    index_price=self.current_state["index_price"],
+                    basis=self.current_state["basis"],
+                    funding_rate=self.current_state["funding_rate"],
+                    next_funding_time=self.current_state["next_funding_time"],
+                    best_bid=self.current_state["best_bid"],
+                    best_ask=self.current_state["best_ask"],
+                    spread=self.current_state["spread"],
+                    tradfi_session_state=self.current_state["tradfi_session_state"],
+                    last_update=self.current_state["last_update"],
+                )
+                .on_conflict_do_update(
+                    index_elements=["symbol"],
+                    set_={
+                        "last_price": self.current_state["last_price"],
+                        "mark_price": self.current_state["mark_price"],
+                        "index_price": self.current_state["index_price"],
+                        "basis": self.current_state["basis"],
+                        "funding_rate": self.current_state["funding_rate"],
+                        "next_funding_time": self.current_state["next_funding_time"],
+                        "best_bid": self.current_state["best_bid"],
+                        "best_ask": self.current_state["best_ask"],
+                        "spread": self.current_state["spread"],
+                        "tradfi_session_state": self.current_state["tradfi_session_state"],
+                        "last_update": self.current_state["last_update"],
+                    },
+                )
             )
 
             async with get_async_session() as session:
                 await session.execute(stmt)
-        except Exception as e:
+        except (SQLAlchemyError, OSError) as e:
             logger.error("Failed to persist live market state: %s", e)
 
     async def _persist_orderbook_snapshot(
         self,
         timestamp: datetime,
-        bids: List[List[str]],
-        asks: List[List[str]],
+        bids: list[list[str]],
+        asks: list[list[str]],
         imbalance: float,
         spread: float,
         top_cluster_bid: float,
@@ -246,21 +254,23 @@ class BinanceWebSocketClient:
     ) -> None:
         """Persist a downsampled order-book depth snapshot to orderbook_snapshots table."""
         try:
-            stmt = insert(OrderbookSnapshot).values(
-                symbol=self.symbol.upper(),
-                timestamp=timestamp,
-                bid_depth_json=bids,
-                ask_depth_json=asks,
-                imbalance_ratio=imbalance,
-                spread=spread,
-                top_cluster_bid=top_cluster_bid,
-                top_cluster_ask=top_cluster_ask,
-            ).on_conflict_do_nothing(
-                index_elements=["symbol", "timestamp"]
+            stmt = (
+                insert(OrderbookSnapshot)
+                .values(
+                    symbol=self.symbol.upper(),
+                    timestamp=timestamp,
+                    bid_depth_json=bids,
+                    ask_depth_json=asks,
+                    imbalance_ratio=imbalance,
+                    spread=spread,
+                    top_cluster_bid=top_cluster_bid,
+                    top_cluster_ask=top_cluster_ask,
+                )
+                .on_conflict_do_nothing(index_elements=["symbol", "timestamp"])
             )
             async with get_async_session() as session:
                 await session.execute(stmt)
-        except Exception as e:
+        except (SQLAlchemyError, OSError) as e:
             logger.debug("Orderbook snapshot insert suppressed: %s", e)
 
     async def run(self) -> None:
@@ -275,11 +285,11 @@ class BinanceWebSocketClient:
             logger.info("Connecting to WebSocket: %s", url)
 
             try:
-                async with websockets.connect(
+                async with connect(
                     url,
                     ping_interval=20,
                     ping_timeout=10,
-                    close_timeout=5,
+                    close_timeout=2,
                 ) as ws:
                     logger.info("WebSocket connected successfully to %s", self.symbol)
                     reconnect_delay = 1
@@ -288,17 +298,12 @@ class BinanceWebSocketClient:
                         try:
                             msg = await asyncio.wait_for(ws.recv(), timeout=1.0)
                             await self._handle_message(msg)
-                        except asyncio.TimeoutError:
+                        except TimeoutError:
                             continue
-
-                    try:
-                        await asyncio.wait_for(ws.close(), timeout=1.5)
-                    except Exception:
-                        pass
 
             except ConnectionClosed as e:
                 logger.warning("WebSocket connection closed: %s. Reconnecting in %ss...", e, reconnect_delay)
-            except Exception as e:
+            except (TimeoutError, OSError) as e:
                 logger.error("WebSocket unexpected error: %s. Reconnecting in %ss...", e, reconnect_delay)
 
             if self.is_running and not self._stop_event.is_set():

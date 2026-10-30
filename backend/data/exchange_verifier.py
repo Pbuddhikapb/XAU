@@ -7,12 +7,12 @@ Enforces Principles 1, 2, 3, 4, 5 of PROJECT_SPECIFICATION.md:
 - Verifies exact contract filters, status, and underlying constituents.
 """
 
-from datetime import datetime, timezone
 import json
 import logging
-from typing import Any, Dict, List, Optional
-import urllib.request
 import urllib.error
+import urllib.request
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy.dialects.postgresql import insert
 
@@ -25,13 +25,12 @@ logger = logging.getLogger(__name__)
 
 class VerificationError(Exception):
     """Raised when instrument verification fails against Binance Futures specifications."""
-    pass
 
 
 class ExchangeVerifier:
     """Authoritative verifier for the Binance XAUUSDT TradFi perpetual contract."""
 
-    def __init__(self, base_url: Optional[str] = None, proxy_url: Optional[str] = None):
+    def __init__(self, base_url: str | None = None, proxy_url: str | None = None):
         if base_url:
             self.base_url = base_url
         elif settings.ENVIRONMENT == "production" or settings.OUTBOUND_PROXY_URL:
@@ -41,15 +40,12 @@ class ExchangeVerifier:
         self.proxy_url = proxy_url or settings.OUTBOUND_PROXY_URL
         self.symbol = settings.SYMBOL.upper()
 
-    def _fetch_json(self, path: str) -> Dict[str, Any]:
+    def _fetch_json(self, path: str) -> dict[str, Any]:
         """Fetch JSON data from Binance endpoint with error handling."""
         url = f"{self.base_url.rstrip('/')}{path}"
         handlers = []
         if self.proxy_url:
-            handlers.append(urllib.request.ProxyHandler({
-                'http': self.proxy_url,
-                'https': self.proxy_url
-            }))
+            handlers.append(urllib.request.ProxyHandler({"http": self.proxy_url, "https": self.proxy_url}))
         opener = urllib.request.build_opener(*handlers)
         req = urllib.request.Request(url, headers={"User-Agent": "Antigravity-XAU/1.0"})
 
@@ -76,7 +72,7 @@ class ExchangeVerifier:
             raise VerificationError(f"Invalid serverTime response: {data}")
         return server_time_ms
 
-    def verify_constituents(self) -> List[Dict[str, Any]]:
+    def verify_constituents(self) -> list[dict[str, Any]]:
         """Verify underlying index constituents for XAUUSDT."""
         data = self._fetch_json(f"/fapi/v1/constituents?symbol={self.symbol}")
         if data.get("symbol") != self.symbol:
@@ -86,7 +82,7 @@ class ExchangeVerifier:
             raise VerificationError(f"No constituents found for {self.symbol}")
         return constituents
 
-    def verify_contract(self) -> Dict[str, Any]:
+    def verify_contract(self) -> dict[str, Any]:
         """
         Fetch and strictly validate contract specifications from /fapi/v1/exchangeInfo.
         Guarantees contract is XAUUSDT TRADIFI_PERPETUAL and actively trading.
@@ -139,7 +135,7 @@ class ExchangeVerifier:
 
         maint_margin_percent = float(spec.get("maintMarginPercent", 2.5))
         onboard_date_ms = int(spec.get("onboardDate", settings.CONTRACT_ONBOARD_TIME_MS))
-        onboard_dt = datetime.fromtimestamp(onboard_date_ms / 1000, tz=timezone.utc)
+        onboard_dt = datetime.fromtimestamp(onboard_date_ms / 1000, tz=UTC)
 
         result = {
             "symbol": spec["symbol"],
@@ -162,37 +158,41 @@ class ExchangeVerifier:
         }
         return result
 
-    def persist_metadata(self, spec: Dict[str, Any]) -> None:
+    def persist_metadata(self, spec: dict[str, Any]) -> None:
         """Upsert verified contract specifications into market_metadata table."""
-        stmt = insert(MarketMetadata).values(
-            symbol=spec["symbol"],
-            pair=spec["pair"],
-            contract_type=spec["contract_type"],
-            underlying_type=spec["underlying_type"],
-            base_asset=spec["base_asset"],
-            quote_asset=spec["quote_asset"],
-            margin_asset=spec["margin_asset"],
-            price_precision=spec["price_precision"],
-            quantity_precision=spec["quantity_precision"],
-            tick_size=spec["tick_size"],
-            step_size=spec["step_size"],
-            min_notional=spec["min_notional"],
-            maint_margin_percent=spec["maint_margin_percent"],
-            onboard_timestamp=spec["onboard_timestamp"],
-            is_active=spec["is_active"],
-            updated_at=datetime.now(timezone.utc),
-        ).on_conflict_do_update(
-            index_elements=["symbol"],
-            set_={
-                "price_precision": spec["price_precision"],
-                "quantity_precision": spec["quantity_precision"],
-                "tick_size": spec["tick_size"],
-                "step_size": spec["step_size"],
-                "min_notional": spec["min_notional"],
-                "maint_margin_percent": spec["maint_margin_percent"],
-                "is_active": spec["is_active"],
-                "updated_at": datetime.now(timezone.utc),
-            }
+        stmt = (
+            insert(MarketMetadata)
+            .values(
+                symbol=spec["symbol"],
+                pair=spec["pair"],
+                contract_type=spec["contract_type"],
+                underlying_type=spec["underlying_type"],
+                base_asset=spec["base_asset"],
+                quote_asset=spec["quote_asset"],
+                margin_asset=spec["margin_asset"],
+                price_precision=spec["price_precision"],
+                quantity_precision=spec["quantity_precision"],
+                tick_size=spec["tick_size"],
+                step_size=spec["step_size"],
+                min_notional=spec["min_notional"],
+                maint_margin_percent=spec["maint_margin_percent"],
+                onboard_timestamp=spec["onboard_timestamp"],
+                is_active=spec["is_active"],
+                updated_at=datetime.now(UTC),
+            )
+            .on_conflict_do_update(
+                index_elements=["symbol"],
+                set_={
+                    "price_precision": spec["price_precision"],
+                    "quantity_precision": spec["quantity_precision"],
+                    "tick_size": spec["tick_size"],
+                    "step_size": spec["step_size"],
+                    "min_notional": spec["min_notional"],
+                    "maint_margin_percent": spec["maint_margin_percent"],
+                    "is_active": spec["is_active"],
+                    "updated_at": datetime.now(UTC),
+                },
+            )
         )
 
         with get_sync_session() as session:
@@ -208,18 +208,19 @@ class ExchangeVerifier:
         inserted_count = 0
         with get_sync_session() as session:
             for r in rates:
-                funding_dt = datetime.fromtimestamp(int(r["fundingTime"]) / 1000, tz=timezone.utc)
-                stmt = insert(FundingHistory).values(
-                    symbol=self.symbol,
-                    funding_time=funding_dt,
-                    funding_rate=float(r["fundingRate"]),
-                    mark_price=float(r.get("markPrice", 0.0)),
-                ).on_conflict_do_nothing(
-                    index_elements=["symbol", "funding_time"]
+                funding_dt = datetime.fromtimestamp(int(r["fundingTime"]) / 1000, tz=UTC)
+                stmt = (
+                    insert(FundingHistory)
+                    .values(
+                        symbol=self.symbol,
+                        funding_time=funding_dt,
+                        funding_rate=float(r["fundingRate"]),
+                        mark_price=float(r.get("markPrice", 0.0)),
+                    )
+                    .on_conflict_do_nothing(index_elements=["symbol", "funding_time"])
                 )
                 session.execute(stmt)
                 inserted_count += 1
 
         logger.info("Persisted %d funding records for %s", inserted_count, self.symbol)
         return inserted_count
-

@@ -30,7 +30,10 @@ from backend.models.tables import (
     LiveMarketState,
     MarketMetadata,
     OHLCVCandle,
+    StructureEvent,
 )
+from backend.structure.structure_engine import StructureEngine
+from backend.structure.support_resistance import detect_support_resistance_zones
 
 logger = logging.getLogger(__name__)
 
@@ -386,3 +389,105 @@ async def get_analytics_regime(
         "volume": volume_eval,
         "vwap": vwap_eval,
     }
+
+
+@app.get("/api/v1/structure/events")
+async def get_structure_events(
+    timeframe: str = Query("1h", description="Candle timeframe"),
+    limit: int = Query(50, ge=1, le=200, description="Number of events"),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[dict[str, Any]]:
+    """Retrieve market structure events (BOS, CHoCH, Sweeps)."""
+    stmt = (
+        select(StructureEvent)
+        .where(StructureEvent.symbol == settings.SYMBOL, StructureEvent.timeframe == timeframe.lower())
+        .order_by(StructureEvent.confirmed_candle_time.desc())
+        .limit(limit)
+    )
+    res = await session.execute(stmt)
+    records = res.scalars().all()
+
+    if records:
+        return [
+            {
+                "event_type": r.event_type,
+                "price": float(r.price),
+                "invalidated_level": float(r.invalidated_level) if r.invalidated_level is not None else None,
+                "event_time": r.event_time.isoformat(),
+                "confirmed_candle_time": r.confirmed_candle_time.isoformat(),
+                "timeframe": r.timeframe,
+                "metadata": r.metadata_json,
+            }
+            for r in reversed(records)
+        ]
+
+    # Compute on the fly if DB does not have events stored yet
+    c_stmt = (
+        select(OHLCVCandle)
+        .where(OHLCVCandle.symbol == settings.SYMBOL, OHLCVCandle.timeframe == timeframe.lower())
+        .order_by(OHLCVCandle.open_time.desc())
+        .limit(100)
+    )
+    c_res = await session.execute(c_stmt)
+    candles = list(reversed(c_res.scalars().all()))
+
+    if len(candles) < 10:
+        return []
+
+    df = pd.DataFrame(
+        [
+            {
+                "open_time": c.open_time,
+                "open": float(c.open),
+                "high": float(c.high),
+                "low": float(c.low),
+                "close": float(c.close),
+                "volume": float(c.volume),
+            }
+            for c in candles
+        ]
+    )
+    analysis = StructureEngine.analyze_timeframe(df, timeframe=timeframe)
+    return analysis["structure_events"][-limit:]
+
+
+@app.get("/api/v1/structure/levels")
+async def get_structure_levels(
+    timeframe: str = Query("1h", description="Candle timeframe"),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[dict[str, Any]]:
+    """Retrieve clustered support and resistance reaction zones."""
+    c_stmt = (
+        select(OHLCVCandle)
+        .where(OHLCVCandle.symbol == settings.SYMBOL, OHLCVCandle.timeframe == timeframe.lower())
+        .order_by(OHLCVCandle.open_time.desc())
+        .limit(150)
+    )
+    c_res = await session.execute(c_stmt)
+    candles = list(reversed(c_res.scalars().all()))
+
+    if len(candles) < 10:
+        return []
+
+    df = pd.DataFrame(
+        [
+            {
+                "open_time": c.open_time,
+                "open": float(c.open),
+                "high": float(c.high),
+                "low": float(c.low),
+                "close": float(c.close),
+                "volume": float(c.volume),
+            }
+            for c in candles
+        ]
+    )
+    zones = detect_support_resistance_zones(df)
+    return [z.to_dict() for z in zones]
+
+
+@app.get("/api/v1/structure/mtf")
+async def get_structure_mtf() -> dict[str, Any]:
+    """Retrieve multi-timeframe alignment across 1D, 4H, 1H, 15M, and 5M."""
+    mtf = await StructureEngine.compute_mtf_alignment(symbol=settings.SYMBOL)
+    return mtf.to_dict()

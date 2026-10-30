@@ -88,3 +88,26 @@ def test_analytics_regime_endpoint(client):
     data = response.json()
     assert data["symbol"] == "XAUUSDT"
     assert "status" in data or "trend" in data
+
+
+def test_structure_events_endpoint(client):
+    response = client.get("/api/v1/structure/events?timeframe=1h&limit=10")
+    assert response.status_code == 200
+    data = response.json()
+    assert isinstance(data, list)
+
+
+def test_structure_levels_endpoint(client):
+    response = client.get("/api/v1/structure/levels?timeframe=1h")
+    assert response.status_code == 200
+    data = response.json()
+    assert isinstance(data, list)
+
+
+def test_structure_mtf_endpoint(client):
+    response = client.get("/api/v1/structure/mtf")
+    assert response.status_code == 200
+    data = response.json()
+    assert "alignment_state" in data
+    assert "compound_score" in data
+    assert "timeframes" in data

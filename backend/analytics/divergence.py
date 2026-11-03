@@ -17,7 +17,6 @@ from analytical_engine.structure.pivots import PivotDetector
 from backend.analytics.momentum import calculate_macd, calculate_rsi
 
 
-
 @dataclass
 class DivergencePoint:
     time: str

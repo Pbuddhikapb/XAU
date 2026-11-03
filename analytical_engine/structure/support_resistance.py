@@ -9,7 +9,6 @@ Strictly conforms to Section 5.H of PROJECT_SPECIFICATION.md:
 """
 
 from datetime import UTC, datetime
-from typing import Any
 
 import numpy as np
 import pandas as pd

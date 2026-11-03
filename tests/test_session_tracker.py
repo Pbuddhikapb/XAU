@@ -12,9 +12,7 @@ Validates:
 7. Sharp boundary transitions at 17:00:00 and 18:00:00 ET.
 """
 
-from datetime import UTC, datetime, timedelta
-
-import pytest
+from datetime import UTC, datetime
 
 from backend.data.session_tracker import (
     BinanceScheduleProvider,

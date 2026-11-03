@@ -94,7 +94,7 @@ def test_support_resistance_adversarial_lookahead(oscillating_df):
     zones_shocked = detect_support_resistance_zones(df_shocked, swing_window=2, as_of_time=t_eval)
 
     assert len(zones_base) == len(zones_shocked)
-    for zb, zs in zip(zones_base, zones_shocked):
+    for zb, zs in zip(zones_base, zones_shocked, strict=False):
         assert zb.zone_type == zs.zone_type
         assert zb.level_center == zs.level_center
         assert zb.level_min == zs.level_min

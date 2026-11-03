@@ -74,8 +74,8 @@ def test_incomplete_candle_rejection():
     # When only_confirmed=False, incomplete bar is included but flagged with is_confirmed=False
     df_5m_all = CandleResampler.resample_ohlcv(df_1m, target_timeframe="5m", only_confirmed=False)
     assert len(df_5m_all) == 2
-    assert df_5m_all.iloc[0]["is_confirmed"] == True
-    assert df_5m_all.iloc[1]["is_confirmed"] == False
+    assert df_5m_all.iloc[0]["is_confirmed"]
+    assert not df_5m_all.iloc[1]["is_confirmed"]
 
 
 def test_4h_boundary_alignment():

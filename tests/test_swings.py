@@ -146,7 +146,7 @@ def test_historical_live_parity_swings(hourly_sample_df):
 
     streamed_list = sorted(streamed_swings_by_time.values(), key=lambda s: (s.index, s.swing_type))
     assert len(batch_swings) == len(streamed_list)
-    for b, s in zip(batch_swings, streamed_list):
+    for b, s in zip(batch_swings, streamed_list, strict=False):
         assert b.index == s.index
         assert b.price == s.price
         assert b.swing_type == s.swing_type

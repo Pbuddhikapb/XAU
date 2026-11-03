@@ -11,14 +11,13 @@ Architecture conforms to Section 4 & 5 of PROJECT_SPECIFICATION.md and Pre-Phase
 5. Explicit uncertainty tracking for fallback-derived or stale schedule states.
 """
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, datetime, time
 from enum import StrEnum
-import logging
 from pathlib import Path
 from typing import Any
-
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
@@ -250,7 +249,7 @@ class BinanceScheduleProvider(ScheduleProvider):
             # Sort chronologically
             parsed.sort(key=lambda x: x["start"])
             self._parsed_intervals = parsed
-        except Exception as e:
+        except (ValueError, KeyError, TypeError) as e:
             logger.warning(f"Failed to parse Binance trading schedule: {e}")
             self._parsed_intervals = []
 
@@ -324,9 +323,9 @@ class BinanceStaticScheduleProvider(ScheduleProvider):
             if p.exists():
                 try:
                     import json
-                    with open(p, "r", encoding="utf-8") as f:
+                    with open(p, encoding="utf-8") as f:
                         loaded_data = json.load(f)
-                except Exception as e:
+                except (OSError, json.JSONDecodeError, ValueError, KeyError) as e:
                     logger.warning(f"Failed to load static Binance schedule from {config_path}: {e}")
 
         if loaded_data:

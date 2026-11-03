@@ -24,6 +24,7 @@ __all__ = [
     "SwingPoint",
     "TimeframeState",
     "analyze_market_structure",
+    "detect_breakout_retests",
     "detect_liquidity_sweeps",
     "detect_price_action_patterns",
     "detect_support_resistance_zones",

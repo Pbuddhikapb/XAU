@@ -8,8 +8,6 @@ Provides:
 3. Explicit metadata columns: anchor_type ('TRADIFI_SESSION' vs 'UTC_CALENDAR_DAY') and anchor_time.
 """
 
-from datetime import UTC, datetime
-from typing import Any
 from zoneinfo import ZoneInfo
 
 import numpy as np

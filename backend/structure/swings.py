@@ -8,14 +8,12 @@ Strictly conforms to Section 5.E of PROJECT_SPECIFICATION.md:
 """
 
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 from analytical_engine.structure.pivots import PivotDetector
-
 
 
 @dataclass(frozen=True)

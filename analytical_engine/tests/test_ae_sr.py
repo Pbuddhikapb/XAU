@@ -3,11 +3,10 @@ Unit and edge-case tests for analytical_engine.structure.support_resistance.
 """
 
 from datetime import UTC, datetime, timedelta
+
 import pandas as pd
-import pytest
 
 from analytical_engine.structure.support_resistance import (
-    SRZoneDetector,
     detect_support_resistance_zones,
 )
 

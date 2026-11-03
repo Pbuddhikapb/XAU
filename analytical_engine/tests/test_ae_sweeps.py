@@ -3,14 +3,12 @@ Unit and edge-case tests for analytical_engine.structure.liquidity_sweeps.
 """
 
 from datetime import UTC, datetime, timedelta
+
 import pandas as pd
-import pytest
 
 from analytical_engine.structure.liquidity_sweeps import (
-    LiquiditySweepDetector,
     detect_liquidity_sweeps,
 )
-from analytical_engine.structure.pivots import PivotDetector
 
 
 def test_ae_liquidity_sweep_detection():

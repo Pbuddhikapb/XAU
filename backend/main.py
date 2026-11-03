@@ -378,7 +378,7 @@ async def get_analytics_regime(
     volume_eval = evaluate_volume_profile(
         df["open"], df["high"], df["low"], df["close"], df["volume"], df["taker_buy_volume"]
     )
-    vwap_eval = evaluate_vwap_position(df, session_reset_hour_utc=23)
+    vwap_eval = evaluate_vwap_position(df)
 
     return {
         "symbol": settings.SYMBOL,

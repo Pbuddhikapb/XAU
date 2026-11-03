@@ -11,7 +11,6 @@ import pandas as pd
 from analytical_engine.models.outputs import PivotRecord
 
 
-
 class PivotDetector:
     """
     Detects confirmed swing highs and swing lows using an (L, R) shoulder algorithm.

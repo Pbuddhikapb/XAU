@@ -3,11 +3,10 @@ Unit and edge-case tests for analytical_engine.structure.breakout_retest.
 """
 
 from datetime import UTC, datetime, timedelta
+
 import pandas as pd
-import pytest
 
 from analytical_engine.structure.breakout_retest import (
-    BreakoutRetestDetector,
     detect_breakout_retests,
 )
 

@@ -14,18 +14,22 @@ import pytest
 # Analytical Engine (authoritative math library)
 from analytical_engine.indicators.momentum import (
     calculate_macd as ae_macd,
-    calculate_roc as ae_roc,
+)
+from analytical_engine.indicators.momentum import (
     calculate_rsi as ae_rsi,
 )
 from analytical_engine.indicators.moving_averages import calculate_ema_series as ae_ema
 from analytical_engine.indicators.trend import calculate_adx as ae_adx
 from analytical_engine.indicators.volatility import (
     calculate_atr as ae_atr,
+)
+from analytical_engine.indicators.volatility import (
     calculate_bollinger_bands as ae_bb,
-    calculate_volatility_percentile as ae_pct,
 )
 from analytical_engine.indicators.volume import (
     calculate_rvol as ae_rvol,
+)
+from analytical_engine.indicators.volume import (
     calculate_taker_ratios as ae_taker,
 )
 from analytical_engine.indicators.vwap import calculate_session_anchored_vwap as ae_vwap
@@ -33,23 +37,30 @@ from analytical_engine.structure.breakout_retest import detect_breakout_retests 
 from analytical_engine.structure.liquidity_sweeps import detect_liquidity_sweeps as ae_sweeps
 from analytical_engine.structure.pivots import PivotDetector
 from analytical_engine.structure.support_resistance import detect_support_resistance_zones as ae_sr
+
 # Backend Analytics (fastAPI & DB adapter layer)
 from backend.analytics.momentum import (
     calculate_macd as be_macd,
-    calculate_roc as be_roc,
+)
+from backend.analytics.momentum import (
     calculate_rsi as be_rsi,
 )
 from backend.analytics.trend import (
     calculate_adx_dmi as be_adx,
+)
+from backend.analytics.trend import (
     calculate_ema as be_ema,
 )
 from backend.analytics.volatility import (
     calculate_atr as be_atr,
+)
+from backend.analytics.volatility import (
     calculate_bollinger_bands as be_bb,
-    calculate_historical_volatility_percentile as be_pct,
 )
 from backend.analytics.volume import (
     calculate_rvol as be_rvol,
+)
+from backend.analytics.volume import (
     calculate_taker_buy_ratio as be_taker,
 )
 from backend.analytics.vwap import calculate_session_anchored_vwap as be_vwap
@@ -57,7 +68,6 @@ from backend.structure.breakout_retest import detect_breakout_retests as be_brea
 from backend.structure.liquidity_sweeps import detect_liquidity_sweeps as be_sweeps
 from backend.structure.support_resistance import detect_support_resistance_zones as be_sr
 from backend.structure.swings import detect_swings as be_swings
-
 
 
 @pytest.fixture
@@ -138,11 +148,11 @@ def test_macd_engine_parity(synthetic_ohlcv_series):
 def test_adx_dmi_engine_parity(synthetic_ohlcv_series):
     """Verify ADX / +DI / -DI parity."""
     h = synthetic_ohlcv_series["high"]
-    l = synthetic_ohlcv_series["low"]
+    low_s = synthetic_ohlcv_series["low"]
     c = synthetic_ohlcv_series["close"]
 
-    be_df = be_adx(h, l, c, period=14)
-    ae_dict = ae_adx(h.values, l.values, c.values, period=14)
+    be_df = be_adx(h, low_s, c, period=14)
+    ae_dict = ae_adx(h.values, low_s.values, c.values, period=14)
 
     for k in ("plus_di", "minus_di", "dx", "adx"):
         be_arr = be_df[k].values
@@ -156,11 +166,11 @@ def test_adx_dmi_engine_parity(synthetic_ohlcv_series):
 def test_atr_engine_parity(synthetic_ohlcv_series):
     """Verify ATR 14 parity."""
     h = synthetic_ohlcv_series["high"]
-    l = synthetic_ohlcv_series["low"]
+    low_s = synthetic_ohlcv_series["low"]
     c = synthetic_ohlcv_series["close"]
 
-    be_arr = be_atr(h, l, c, period=14).values
-    ae_arr = ae_atr(h.values, l.values, c.values, period=14)
+    be_arr = be_atr(h, low_s, c, period=14).values
+    ae_arr = ae_atr(h.values, low_s.values, c.values, period=14)
 
     valid_mask = np.isfinite(be_arr) & np.isfinite(ae_arr)
     max_diff = np.max(np.abs(be_arr[valid_mask] - ae_arr[valid_mask]))
@@ -221,7 +231,7 @@ def test_swings_engine_parity(synthetic_ohlcv_series):
     ae_pivots_list = PivotDetector(left_bars=3, right_bars=3).find_pivots(synthetic_ohlcv_series)
 
     assert len(be_swings_list) == len(ae_pivots_list)
-    for b, a in zip(be_swings_list, ae_pivots_list):
+    for b, a in zip(be_swings_list, ae_pivots_list, strict=False):
         assert b.index == a.index
         assert b.price == a.pivot_price
         assert b.swing_type == f"SWING_{a.pivot_type}"
@@ -235,7 +245,7 @@ def test_liquidity_sweeps_engine_parity(synthetic_ohlcv_series):
     ae_sweeps_list = ae_sweeps(synthetic_ohlcv_series, swing_window=3)
 
     assert len(be_sweeps_list) == len(ae_sweeps_list)
-    for b, a in zip(be_sweeps_list, ae_sweeps_list):
+    for b, a in zip(be_sweeps_list, ae_sweeps_list, strict=False):
         assert b.sweep_type == a.sweep_type
         assert np.isclose(b.swept_level, a.swept_level)
         assert np.isclose(b.penetration_price, a.penetration_price)
@@ -249,7 +259,7 @@ def test_support_resistance_engine_parity(synthetic_ohlcv_series):
     ae_zones = ae_sr(synthetic_ohlcv_series, swing_window=3)
 
     assert len(be_zones) == len(ae_zones)
-    for b, a in zip(be_zones, ae_zones):
+    for b, a in zip(be_zones, ae_zones, strict=False):
         assert b.zone_type == a.zone_type
         assert np.isclose(b.level_center, a.level_center)
         assert np.isclose(b.level_min, a.level_min)
@@ -264,7 +274,7 @@ def test_breakout_retest_engine_parity(synthetic_ohlcv_series):
     ae_events = ae_breakout(synthetic_ohlcv_series, swing_window=3)
 
     assert len(be_events) == len(ae_events)
-    for b, a in zip(be_events, ae_events):
+    for b, a in zip(be_events, ae_events, strict=False):
         assert b.direction == a.direction
         assert np.isclose(b.level_price, a.level_price)
         assert np.isclose(b.breakout_price, a.breakout_price)

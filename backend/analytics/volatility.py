@@ -13,9 +13,14 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from analytical_engine.indicators.moving_averages import calculate_sma_series
 from analytical_engine.indicators.volatility import (
     calculate_atr as ae_atr,
+)
+from analytical_engine.indicators.volatility import (
     calculate_bollinger_bands as ae_bb,
+)
+from analytical_engine.indicators.volatility import (
     calculate_volatility_percentile as ae_pct,
 )
 
@@ -118,7 +123,8 @@ def evaluate_volatility_regime(high: pd.Series, low: pd.Series, close: pd.Series
         is_squeeze = False
 
     # Expanding: Bandwidth rising sharply above rolling 20 MA of bandwidth
-    bw_ma = bb_df["bandwidth"].rolling(20).mean().loc[last_idx]
+    bw_ma_series = calculate_sma_series(bb_df["bandwidth"].to_numpy(), period=20)
+    bw_ma = float(bw_ma_series[-1])
     is_expanding = bw_raw > bw_ma * 1.25 if not (np.isnan(bw_ma) or np.isnan(bw_raw)) else False
 
     if is_squeeze:

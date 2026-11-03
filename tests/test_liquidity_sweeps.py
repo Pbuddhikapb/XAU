@@ -14,7 +14,6 @@ Strictly verifies:
 from datetime import UTC, datetime, timedelta
 
 import pandas as pd
-import pytest
 
 from backend.structure.liquidity_sweeps import detect_liquidity_sweeps
 

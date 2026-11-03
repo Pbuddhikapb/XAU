@@ -14,6 +14,8 @@ import pandas as pd
 
 from analytical_engine.indicators.volume import (
     calculate_rvol as ae_rvol,
+)
+from analytical_engine.indicators.volume import (
     calculate_taker_ratios as ae_taker_ratios,
 )
 

@@ -10,14 +10,11 @@ Verifies:
 """
 
 from datetime import UTC, datetime, timedelta
-from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from backend.analytics.vwap import (
-    calculate_daily_vwap,
     calculate_session_anchored_vwap,
     calculate_utc_daily_vwap,
     evaluate_vwap_position,

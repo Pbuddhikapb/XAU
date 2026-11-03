@@ -13,17 +13,14 @@ Strictly conforms to Section 5.F of PROJECT_SPECIFICATION.md and Phase 3 Remedia
 """
 
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 from analytical_engine.structure.liquidity_sweeps import (
     detect_liquidity_sweeps as ae_detect_liquidity_sweeps,
 )
-from backend.structure.swings import SwingPoint, detect_swings
-
 
 
 @dataclass(frozen=True)

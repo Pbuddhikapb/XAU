@@ -96,8 +96,8 @@ class IndicatorEngine:
         result["relative_volume"] = calculate_rvol(volume, period=20)
         result["taker_buy_ratio"] = calculate_taker_buy_ratio(volume, taker_buy_vol)
 
-        # 5. Session-Anchored VWAP (23:00 UTC TradFi Gold CME Session Reset)
-        vwap_df = calculate_session_anchored_vwap(result, session_reset_hour_utc=23, time_col=time_col)
+        # 5. Session-Anchored VWAP (Dynamic NY 18:00 TradFi Gold CME Session Reset)
+        vwap_df = calculate_session_anchored_vwap(result, session_reset_hour_utc=None, time_col=time_col)
         result["vwap"] = vwap_df["vwap"]
 
         return result

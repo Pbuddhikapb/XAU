@@ -13,7 +13,6 @@ Strictly verifies:
 from datetime import UTC, datetime, timedelta
 
 import pandas as pd
-import pytest
 
 from backend.structure.breakout_retest import detect_breakout_retests
 

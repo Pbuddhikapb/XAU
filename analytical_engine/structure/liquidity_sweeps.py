@@ -14,7 +14,6 @@ Strictly conforms to Section 5.F of PROJECT_SPECIFICATION.md:
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 from analytical_engine.models.outputs import LiquiditySweepRecord, PivotRecord

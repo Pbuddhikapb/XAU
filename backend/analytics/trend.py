@@ -1,9 +1,10 @@
 """
 Trend Analysis Module for Binance XAUUSDT.
 Strictly conforms to Section 5.A of PROJECT_SPECIFICATION.md:
-- EMA 20, 50, 100, 200
+- EMA 20, 50, 100, 200 (SMA seeded Welles Wilder convention)
 - ADX 14 and DMI (+DI, -DI) using Wilder's smoothing
 - Authoritative Trend Direction and Trend Strength calculations
+- Delegates directly to authoritative analytical_engine library.
 """
 
 from typing import Any
@@ -11,16 +12,19 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from analytical_engine.indicators.moving_averages import calculate_ema_series
+from analytical_engine.indicators.trend import calculate_adx as ae_adx
+
 
 def calculate_ema(series: pd.Series, period: int, min_periods: int | None = None) -> pd.Series:
     """
     Calculate Exponential Moving Average (EMA).
-    Formula: EMA_t = alpha * P_t + (1 - alpha) * EMA_{t-1}, where alpha = 2 / (period + 1).
+    Delegates to analytical_engine for exact SMA-seeded formulation.
     """
     if series.empty:
         return pd.Series(dtype=np.float64, index=series.index)
-    min_p = min(period, 5) if min_periods is None else min_periods
-    return series.ewm(span=period, adjust=False, min_periods=min_p).mean()
+    arr = calculate_ema_series(series.values, period=period)
+    return pd.Series(arr, index=series.index, dtype=np.float64)
 
 
 def calculate_trend_emas(close: pd.Series, periods: tuple[int, ...] = (20, 50, 100, 200)) -> dict[str, pd.Series]:
@@ -34,64 +38,19 @@ def calculate_trend_emas(close: pd.Series, periods: tuple[int, ...] = (20, 50, 1
 def calculate_adx_dmi(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.DataFrame:
     """
     Calculate Wilder's Average Directional Index (ADX) and Directional Movement Index (DMI).
-
-    Formulas:
-        TR_t = max(H_t - L_t, |H_t - C_{t-1}|, |L_t - C_{t-1}|)
-        +DM_t = H_t - H_{t-1} if (H_t - H_{t-1} > L_{t-1} - L_t and H_t - H_{t-1} > 0) else 0
-        -DM_t = L_{t-1} - L_t if (L_{t-1} - L_t > H_t - H_{t-1} and L_{t-1} - L_t > 0) else 0
-        +DI = 100 * WilderSmooth(+DM, period) / WilderSmooth(TR, period)
-        -DI = 100 * WilderSmooth(-DM, period) / WilderSmooth(TR, period)
-        DX = 100 * |+DI - -DI| / (+DI + -DI)
-        ADX = WilderSmooth(DX, period)
+    Delegates to analytical_engine for exact Welles Wilder formulation.
     """
     if len(close) < period + 1:
         empty = pd.Series(np.nan, index=close.index, dtype=np.float64)
-        return pd.DataFrame({"plus_di": empty, "minus_di": empty, "dx": empty, "adx": empty})
+        return pd.DataFrame({"plus_di": empty, "minus_di": empty, "dx": empty, "adx": empty}, index=close.index)
 
-    prev_close = close.shift(1)
-    prev_high = high.shift(1)
-    prev_low = low.shift(1)
-
-    # True Range
-    tr1 = high - low
-    tr2 = (high - prev_close).abs()
-    tr3 = (low - prev_close).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-
-    # Directional Movement
-    up_move = high - prev_high
-    down_move = prev_low - low
-
-    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
-    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-
-    plus_dm_s = pd.Series(plus_dm, index=close.index, dtype=np.float64)
-    minus_dm_s = pd.Series(minus_dm, index=close.index, dtype=np.float64)
-
-    # Wilder's smoothing: alpha = 1 / period
-    tr_smooth = tr.ewm(alpha=1.0 / period, adjust=False).mean()
-    plus_dm_smooth = plus_dm_s.ewm(alpha=1.0 / period, adjust=False).mean()
-    minus_dm_smooth = minus_dm_s.ewm(alpha=1.0 / period, adjust=False).mean()
-
-    # Prevent division by zero
-    eps = 1e-9
-    plus_di = 100.0 * (plus_dm_smooth / (tr_smooth + eps))
-    minus_di = 100.0 * (minus_dm_smooth / (tr_smooth + eps))
-
-    di_sum = plus_di + minus_di + eps
-    dx = 100.0 * ((plus_di - minus_di).abs() / di_sum)
-    adx = dx.ewm(alpha=1.0 / period, adjust=False).mean()
-
-    # Mask initial warmup periods with NaN
-    if len(close) >= period * 2:
-        adx.iloc[: period * 2 - 1] = np.nan
-
+    res = ae_adx(high.values, low.values, close.values, period=period)
     return pd.DataFrame(
         {
-            "plus_di": plus_di,
-            "minus_di": minus_di,
-            "dx": dx,
-            "adx": adx,
+            "plus_di": res["plus_di"],
+            "minus_di": res["minus_di"],
+            "dx": res["dx"],
+            "adx": res["adx"],
         },
         index=close.index,
     )

@@ -1,10 +1,11 @@
 """
 Volatility Analysis Module for Binance XAUUSDT.
 Strictly conforms to Section 5.C of PROJECT_SPECIFICATION.md:
-- ATR 14 (Wilder's exponential smoothing)
-- Bollinger Bands (20, 2.0: Upper, Middle, Lower, Bandwidth, %B)
+- ATR 14 (Welles Wilder exact smoothing)
+- Bollinger Bands (20, 2.0: Upper, Middle, Lower, Bandwidth, %B, ddof=1)
 - Volatility Expansion & Contraction (Squeeze Detection)
 - Historical Volatility Percentile
+- Delegates directly to authoritative analytical_engine library.
 """
 
 from typing import Any
@@ -12,60 +13,45 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from analytical_engine.indicators.volatility import (
+    calculate_atr as ae_atr,
+    calculate_bollinger_bands as ae_bb,
+    calculate_volatility_percentile as ae_pct,
+)
+
 
 def calculate_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
     """
-    Calculate Wilder's Average True Range (ATR).
-
-    Formula:
-        TR_t = max(H_t - L_t, |H_t - C_{t-1}|, |L_t - C_{t-1}|)
-        ATR_t = WilderSmooth(TR, period)
+    Calculate Welles Wilder's Average True Range (ATR).
+    Delegates to analytical_engine for exact mathematical compliance.
     """
     if len(close) < period:
         return pd.Series(np.nan, index=close.index, dtype=np.float64)
 
-    prev_close = close.shift(1)
-    tr1 = high - low
-    tr2 = (high - prev_close).abs()
-    tr3 = (low - prev_close).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-
-    atr = tr.ewm(alpha=1.0 / period, adjust=False).mean()
-    atr.iloc[:period] = np.nan
-    return atr
+    arr = ae_atr(high.values, low.values, close.values, period=period)
+    return pd.Series(arr, index=close.index, dtype=np.float64)
 
 
 def calculate_bollinger_bands(series: pd.Series, period: int = 20, num_std: float = 2.0) -> pd.DataFrame:
     """
-    Calculate Bollinger Bands, Bandwidth, and %B.
-
-    Formulas:
-        Middle = SMA(series, period)
-        Upper = Middle + num_std * StdDev(series, period)
-        Lower = Middle - num_std * StdDev(series, period)
-        Bandwidth = (Upper - Lower) / Middle
-        %B = (Close - Lower) / (Upper - Lower + epsilon)
+    Calculate Bollinger Bands, Bandwidth, and %B with sample standard deviation (ddof=1).
+    Delegates to analytical_engine.
     """
     if len(series) < period:
         empty = pd.Series(np.nan, index=series.index, dtype=np.float64)
-        return pd.DataFrame({"upper": empty, "middle": empty, "lower": empty, "bandwidth": empty, "pct_b": empty})
+        return pd.DataFrame(
+            {"upper": empty, "middle": empty, "lower": empty, "bandwidth": empty, "pct_b": empty},
+            index=series.index,
+        )
 
-    middle = series.rolling(window=period).mean()
-    std = series.rolling(window=period).std(ddof=0)
-    upper = middle + (std * num_std)
-    lower = middle - (std * num_std)
-
-    eps = 1e-9
-    bandwidth = (upper - lower) / (middle.abs() + eps)
-    pct_b = (series - lower) / (upper - lower + eps)
-
+    res = ae_bb(series.values, period=period, num_std=num_std, ddof=1)
     return pd.DataFrame(
         {
-            "upper": upper,
-            "middle": middle,
-            "lower": lower,
-            "bandwidth": bandwidth,
-            "pct_b": pct_b,
+            "upper": res["upper"],
+            "middle": res["middle"],
+            "lower": res["lower"],
+            "bandwidth": res["bandwidth"],
+            "pct_b": res["percent_b"],
         },
         index=series.index,
     )
@@ -75,26 +61,14 @@ def calculate_historical_volatility_percentile(atr_series: pd.Series, lookback: 
     """
     Calculate rolling historical percentile rank (0.0 to 100.0) of current ATR
     relative to past `lookback` periods.
-
-    Formula:
-        Percentile_t = 100 * count(ATR_i <= ATR_t) / window_size
+    Delegates to analytical_engine.
     """
     if len(atr_series) < 2:
         return pd.Series(50.0, index=atr_series.index, dtype=np.float64)
 
-    def percentile_rank(window: np.ndarray) -> float:
-        valid = window[~np.isnan(window)]
-        if len(valid) == 0:
-            return 50.0
-        current = valid[-1]
-        rank = (valid <= current).sum()
-        return float(rank / len(valid) * 100.0)
-
-    return (
-        atr_series.rolling(window=lookback, min_periods=min(10, len(atr_series)))
-        .apply(percentile_rank, raw=True)
-        .fillna(50.0)
-    )
+    arr = ae_pct(atr_series.values, lookback=lookback)
+    s = pd.Series(arr, index=atr_series.index, dtype=np.float64).fillna(50.0)
+    return s
 
 
 def evaluate_volatility_regime(high: pd.Series, low: pd.Series, close: pd.Series) -> dict[str, Any]:

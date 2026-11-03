@@ -3,6 +3,7 @@ Structure and Multi-Timeframe Analysis Package for Binance XAUUSDT.
 Strictly conforms to Section 5.E, 5.F, 5.G, 5.H, and Section 6 of PROJECT_SPECIFICATION.md.
 """
 
+from backend.structure.breakout_retest import BreakoutRetestEvent, detect_breakout_retests
 from backend.structure.liquidity_sweeps import LiquiditySweepEvent, detect_liquidity_sweeps
 from backend.structure.market_structure import MarketStructureEvent, analyze_market_structure
 from backend.structure.mtf_manager import MTFAlignmentResult, MTFManager, TimeframeState
@@ -12,6 +13,7 @@ from backend.structure.support_resistance import SupportResistanceZone, detect_s
 from backend.structure.swings import SwingPoint, detect_swings
 
 __all__ = [
+    "BreakoutRetestEvent",
     "LiquiditySweepEvent",
     "MTFAlignmentResult",
     "MTFManager",

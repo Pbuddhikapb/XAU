@@ -1,10 +1,11 @@
 """
 Momentum Analysis Module for Binance XAUUSDT.
 Strictly conforms to Section 5.B of PROJECT_SPECIFICATION.md:
-- RSI 14 (Wilder's exponential smoothing)
+- RSI 14 (Welles Wilder exact smoothing with arithmetic SMA initialization)
 - MACD (12, 26, 9: Fast EMA, Slow EMA, Signal EMA, Histogram)
 - Rate of Change (ROC 14)
 - Momentum State Evaluation
+- Delegates directly to authoritative analytical_engine library.
 """
 
 from typing import Any
@@ -12,39 +13,22 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from backend.analytics.trend import calculate_ema
+from analytical_engine.indicators.momentum import (
+    calculate_macd as ae_macd,
+    calculate_roc as ae_roc,
+    calculate_rsi as ae_rsi,
+)
 
 
 def calculate_rsi(series: pd.Series, period: int = 14) -> pd.Series:
     """
-    Calculate Wilder's Relative Strength Index (RSI).
-
-    Formula:
-        delta = P_t - P_{t-1}
-        U = max(delta, 0), D = max(-delta, 0)
-        AvgGain = WilderSmooth(U, period)
-        AvgLoss = WilderSmooth(D, period)
-        RS = AvgGain / (AvgLoss + epsilon)
-        RSI = 100 - (100 / (1 + RS))
+    Calculate Welles Wilder's Relative Strength Index (RSI).
+    Delegates to analytical_engine for exact mathematical compliance.
     """
-    if len(series) < period + 1:
-        return pd.Series(np.nan, index=series.index, dtype=np.float64)
-
-    delta = series.diff()
-    gain = delta.clip(lower=0.0)
-    loss = (-delta).clip(lower=0.0)
-
-    # Wilder's smoothing: alpha = 1 / period
-    avg_gain = gain.ewm(alpha=1.0 / period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1.0 / period, adjust=False).mean()
-
-    eps = 1e-9
-    rs = avg_gain / (avg_loss + eps)
-    rsi = 100.0 - (100.0 / (1.0 + rs))
-
-    # Clean up warmup index
-    rsi.iloc[:period] = np.nan
-    return rsi
+    if len(series) == 0:
+        return pd.Series(dtype=np.float64, index=series.index)
+    arr = ae_rsi(series.values, period=period)
+    return pd.Series(arr, index=series.index, dtype=np.float64)
 
 
 def calculate_macd(
@@ -55,27 +39,18 @@ def calculate_macd(
 ) -> pd.DataFrame:
     """
     Calculate Moving Average Convergence Divergence (MACD).
-
-    Formula:
-        MACD_Line = EMA(series, fast_period) - EMA(series, slow_period)
-        Signal_Line = EMA(MACD_Line, signal_period)
-        Histogram = MACD_Line - Signal_Line
+    Delegates to analytical_engine for exact SMA-seeded EMAs.
     """
-    if len(series) < slow_period:
-        empty = pd.Series(np.nan, index=series.index, dtype=np.float64)
-        return pd.DataFrame({"macd": empty, "signal": empty, "hist": empty})
+    if len(series) == 0:
+        empty = pd.Series(dtype=np.float64, index=series.index)
+        return pd.DataFrame({"macd": empty, "signal": empty, "hist": empty}, index=series.index)
 
-    fast_ema = calculate_ema(series, period=fast_period)
-    slow_ema = calculate_ema(series, period=slow_period)
-    macd_line = fast_ema - slow_ema
-    signal_line = calculate_ema(macd_line, period=signal_period)
-    histogram = macd_line - signal_line
-
+    res = ae_macd(series.values, fast_period=fast_period, slow_period=slow_period, signal_period=signal_period)
     return pd.DataFrame(
         {
-            "macd": macd_line,
-            "signal": signal_line,
-            "hist": histogram,
+            "macd": res["macd_line"],
+            "signal": res["signal_line"],
+            "hist": res["histogram"],
         },
         index=series.index,
     )
@@ -84,16 +59,12 @@ def calculate_macd(
 def calculate_roc(series: pd.Series, period: int = 14) -> pd.Series:
     """
     Calculate Rate of Change (ROC).
-
-    Formula:
-        ROC_t = 100 * (P_t - P_{t-period}) / P_{t-period}
+    Delegates to analytical_engine.
     """
-    if len(series) < period + 1:
-        return pd.Series(np.nan, index=series.index, dtype=np.float64)
-
-    prev_p = series.shift(period)
-    eps = 1e-9
-    return 100.0 * ((series - prev_p) / (prev_p.abs() + eps))
+    if len(series) == 0:
+        return pd.Series(dtype=np.float64, index=series.index)
+    arr = ae_roc(series.values, period=period)
+    return pd.Series(arr, index=series.index, dtype=np.float64)
 
 
 def evaluate_momentum(series: pd.Series) -> dict[str, Any]:

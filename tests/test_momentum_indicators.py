@@ -46,7 +46,8 @@ def test_calculate_roc():
 
 
 def test_evaluate_momentum():
-    series = pd.Series([2650.0 + i * 2.0 for i in range(50)])
+    # Accelerating upward series to trigger positive MACD histogram
+    series = pd.Series([2650.0 + i * 1.5 + (i * 0.1) ** 2 for i in range(50)])
     eval_m = evaluate_momentum(series)
     assert eval_m["rsi_14"] > 60.0
     assert eval_m["macd_hist"] > 0

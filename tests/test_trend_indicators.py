@@ -15,15 +15,19 @@ from backend.analytics.trend import (
 
 def test_calculate_ema_math():
     prices = pd.Series([10.0, 11.0, 12.0, 13.0, 14.0, 15.0])
-    ema_3 = calculate_ema(prices, period=3, min_periods=1)
+    ema_3 = calculate_ema(prices, period=3)
     assert len(ema_3) == len(prices)
-    # alpha = 2 / (3 + 1) = 0.5
-    # ema[0] = 10.0
-    # ema[1] = 0.5 * 11 + 0.5 * 10 = 10.5
-    # ema[2] = 0.5 * 12 + 0.5 * 10.5 = 11.25
-    assert np.isclose(ema_3.iloc[0], 10.0)
-    assert np.isclose(ema_3.iloc[1], 10.5)
-    assert np.isclose(ema_3.iloc[2], 11.25)
+    # Standard financial EMA: seeded with SMA of first 3 bars at index 2
+    # ema[0] = nan, ema[1] = nan
+    # ema[2] = SMA(10, 11, 12) = 11.0
+    # ema[3] = 0.5 * 13 + 0.5 * 11.0 = 12.0
+    # ema[4] = 0.5 * 14 + 0.5 * 12.0 = 13.0
+    assert np.isnan(ema_3.iloc[0])
+    assert np.isnan(ema_3.iloc[1])
+    assert np.isclose(ema_3.iloc[2], 11.0)
+    assert np.isclose(ema_3.iloc[3], 12.0)
+    assert np.isclose(ema_3.iloc[4], 13.0)
+    assert np.isclose(ema_3.iloc[5], 14.0)
 
 
 def test_calculate_trend_emas_keys():

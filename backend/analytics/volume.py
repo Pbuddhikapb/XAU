@@ -12,38 +12,38 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from analytical_engine.indicators.volume import (
+    calculate_rvol as ae_rvol,
+    calculate_taker_ratios as ae_taker_ratios,
+)
+
 
 def calculate_rvol(volume: pd.Series, period: int = 20) -> pd.Series:
     """
     Calculate Relative Volume (RVOL).
     Compares current volume to the trailing 20-period baseline volume.
-
-    Formula:
-        RVOL_t = Volume_t / SMA(Volume, period)_{t-1}
+    Delegates to analytical_engine.
     """
     if len(volume) < 2:
         return pd.Series(1.0, index=volume.index, dtype=np.float64)
 
-    # Use prior period moving average so current spike does not inflate baseline
-    vol_ma = volume.shift(1).rolling(window=period, min_periods=min(5, len(volume))).mean()
-    vol_ma = vol_ma.combine_first(volume.rolling(window=period, min_periods=1).mean())
-
-    eps = 1e-9
-    rvol = volume / (vol_ma + eps)
-    return rvol.fillna(1.0)
+    arr = ae_rvol(volume.values, period=period)
+    s = pd.Series(arr, index=volume.index, dtype=np.float64)
+    # Fill warmup with initial relative volume baseline of 1.0
+    return s.fillna(1.0)
 
 
 def calculate_taker_buy_ratio(volume: pd.Series, taker_buy_volume: pd.Series) -> pd.Series:
     """
     Calculate Taker Buy Ratio.
-
-    Formula:
-        TakerBuyRatio_t = TakerBuyVolume_t / (Volume_t + epsilon)
-        Guaranteed bounded in [0.0, 1.0].
+    Delegates to analytical_engine. Guaranteed bounded in [0.0, 1.0].
     """
-    eps = 1e-9
-    ratio = taker_buy_volume / (volume + eps)
-    return ratio.clip(lower=0.0, upper=1.0)
+    if len(volume) == 0:
+        return pd.Series(dtype=np.float64, index=volume.index)
+
+    res = ae_taker_ratios(volume.values, taker_buy_volume.values)
+    s = pd.Series(res["taker_buy_ratio"], index=volume.index, dtype=np.float64)
+    return s.fillna(0.5).clip(lower=0.0, upper=1.0)
 
 
 def calculate_volume_delta(volume: pd.Series, taker_buy_volume: pd.Series) -> pd.DataFrame:

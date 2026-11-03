@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xau-intelligence"
+version = "1.0.0"
+description = "Binance XAUUSDT Market Intelligence System"
+readme = "PROJECT_SPECIFICATION.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.4",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.9.2",
+    "pydantic-settings>=2.6.1",
+    "pandas>=2.2.3",
+    "numpy>=2.1.3",
+    "asyncpg>=0.30.0",
+    "psycopg2-binary>=2.9.10",
+    "SQLAlchemy>=2.0.36",
+    "alembic>=1.13.3",
+    "aiohttp>=3.10.10",
+    "websockets>=13.1",
+    "requests>=2.32.3",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["backend*", "analytical_engine*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]

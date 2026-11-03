@@ -1,20 +1,24 @@
 """
 Swing Point Detection Module for Binance XAUUSDT.
 Strictly conforms to Section 5.E of PROJECT_SPECIFICATION.md:
-- Detects Swing Highs and Swing Lows with parameterized radius k.
-- Enforces strict no-lookahead confirmation: a swing at index i is confirmed only at index i + k.
-- Records original occurrence time and confirmed candle time.
+- Detects Swing Highs and Swing Lows with parameterized radius k (or asymmetrical shoulders L, R).
+- Enforces strict no-lookahead confirmation: a swing at index i is confirmed only when candle (i + R) closes.
+- Records original occurrence time and confirmed candle time as distinct fields.
+- Delegates to or aligns directly with authoritative analytical_engine library.
 """
 
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
+from analytical_engine.structure.pivots import PivotDetector
 
-@dataclass
+
+
+@dataclass(frozen=True)
 class SwingPoint:
     index: int
     time: datetime
@@ -33,79 +37,60 @@ class SwingPoint:
 def detect_swings(
     df: pd.DataFrame,
     window: int = 3,
+    left_bars: int | None = None,
+    right_bars: int | None = None,
     time_col: str = "open_time",
+    close_time_col: str = "close_time",
+    current_time: datetime | None = None,
 ) -> list[SwingPoint]:
     """
-    Detect local swing highs and lows with confirmation radius `window`.
-    A peak at index i requires `window` bars on both sides to be lower.
-    A trough at index i requires `window` bars on both sides to be higher.
-    Confirmation occurs at bar index i + window.
+    Detect local swing highs and lows with confirmation radius.
+
+    Parameters:
+        df: Input DataFrame containing high, low, and timestamp columns.
+        window: Symmetrical confirmation radius (used if left_bars/right_bars are None).
+        left_bars: Confirmation bars required to the left (must be <= candidate peak).
+        right_bars: Confirmation bars required to the right (must be < candidate peak).
+        time_col: Column name for candle open timestamp.
+        close_time_col: Column name for candle close timestamp.
+        current_time: Optional evaluation timestamp; any pivot whose confirmation candle
+                      closes after current_time will be withheld as unconfirmed.
+
+    A peak at index i requires left_bars to be lower/equal and right_bars to be strictly lower.
+    A trough at index i requires left_bars to be higher/equal and right_bars to be strictly higher.
+    Confirmation occurs at bar index i + right_bars, and confirmed_time is strictly
+    the close_time of candle (i + right_bars) to eliminate temporal lookahead bias.
     """
+    l_bars = left_bars if left_bars is not None else window
+    r_bars = right_bars if right_bars is not None else window
+
+    if l_bars < 1 or r_bars < 1:
+        raise ValueError(f"left_bars ({l_bars}) and right_bars ({r_bars}) must be >= 1.")
+
     n = len(df)
-    if n < (2 * window) + 1:
+    if n < (l_bars + r_bars + 1):
         return []
 
-    highs = df["high"].astype(float).to_numpy()
-    lows = df["low"].astype(float).to_numpy()
-    times = df[time_col].tolist()
-
-    # Normalize times to UTC datetime
-    dt_times: list[datetime] = []
-    for t in times:
-        if isinstance(t, datetime):
-            dt_times.append(t if t.tzinfo else t.replace(tzinfo=UTC))
-        elif isinstance(t, str):
-            dt_times.append(datetime.fromisoformat(t).replace(tzinfo=UTC))
-        elif hasattr(t, "to_pydatetime"):
-            py_dt = t.to_pydatetime()
-            dt_times.append(py_dt if py_dt.tzinfo else py_dt.replace(tzinfo=UTC))
-        else:
-            dt_times.append(datetime.now(UTC))
+    detector = PivotDetector(left_bars=l_bars, right_bars=r_bars)
+    pivots = detector.find_pivots(
+        df,
+        current_time=current_time,
+        time_col=time_col,
+        close_time_col=close_time_col,
+    )
 
     swings: list[SwingPoint] = []
-
-    for i in range(window, n - window):
-        h_val = highs[i]
-        l_val = lows[i]
-
-        if np.isnan(h_val) or np.isnan(l_val):
-            continue
-
-        is_swing_high = True
-        is_swing_low = True
-
-        for k in range(1, window + 1):
-            if highs[i - k] >= h_val or highs[i + k] >= h_val:
-                is_swing_high = False
-            if lows[i - k] <= l_val or lows[i + k] <= l_val:
-                is_swing_low = False
-
-        conf_idx = i + window
-        conf_time = dt_times[conf_idx]
-
-        if is_swing_high:
-            swings.append(
-                SwingPoint(
-                    index=i,
-                    time=dt_times[i],
-                    price=float(h_val),
-                    swing_type="SWING_HIGH",
-                    confirmed_index=conf_idx,
-                    confirmed_time=conf_time,
-                )
+    for p in pivots:
+        swings.append(
+            SwingPoint(
+                index=p.index,
+                time=p.pivot_time,
+                price=p.pivot_price,
+                swing_type=f"SWING_{p.pivot_type}",
+                confirmed_index=p.confirmed_index,
+                confirmed_time=p.confirmation_time,
             )
-
-        if is_swing_low:
-            swings.append(
-                SwingPoint(
-                    index=i,
-                    time=dt_times[i],
-                    price=float(l_val),
-                    swing_type="SWING_LOW",
-                    confirmed_index=conf_idx,
-                    confirmed_time=conf_time,
-                )
-            )
+        )
 
     # Sort chronologically by original occurrence index
     swings.sort(key=lambda s: (s.index, s.swing_type))

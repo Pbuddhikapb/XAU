@@ -13,7 +13,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from analytical_engine.structure.pivots import PivotDetector
 from backend.analytics.momentum import calculate_macd, calculate_rsi
+
 
 
 @dataclass
@@ -41,37 +43,26 @@ class DivergenceResult:
 def find_swings(series: pd.Series, window: int = 4) -> tuple[list[tuple[int, float]], list[tuple[int, float]]]:
     """
     Identify local swing highs and swing lows without forward leakage.
-    A swing at index i is confirmed when subsequent `window` bars are lower/higher.
+    Delegates to PivotDetector for single authoritative shoulder mathematics.
     Returns: (swing_highs, swing_lows) where each element is (index_pos, value).
     """
     n = len(series)
     if n < (2 * window) + 1:
         return [], []
 
-    vals = series.to_numpy()
-    highs: list[tuple[int, float]] = []
-    lows: list[tuple[int, float]] = []
-
-    for i in range(window, n - window):
-        v = vals[i]
-        if np.isnan(v):
-            continue
-
-        is_high = True
-        is_low = True
-
-        for k in range(1, window + 1):
-            if vals[i - k] >= v or vals[i + k] >= v:
-                is_high = False
-            if vals[i - k] <= v or vals[i + k] <= v:
-                is_low = False
-
-        if is_high:
-            highs.append((i, float(v)))
-        if is_low:
-            lows.append((i, float(v)))
-
+    vals = series.to_numpy(dtype=np.float64)
+    dummy_df = pd.DataFrame({
+        "open_time": pd.date_range("2026-01-01", periods=n, freq="1min"),
+        "high": vals,
+        "low": vals,
+        "close": vals,
+    })
+    detector = PivotDetector(left_bars=window, right_bars=window)
+    pivots = detector.find_pivots(dummy_df)
+    highs = [(p.index, p.pivot_price) for p in pivots if p.pivot_type == "HIGH"]
+    lows = [(p.index, p.pivot_price) for p in pivots if p.pivot_type == "LOW"]
     return highs, lows
+
 
 
 def detect_divergences(

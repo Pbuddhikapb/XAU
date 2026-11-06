@@ -7,10 +7,14 @@ Strictly conforms to Section 5.G of PROJECT_SPECIFICATION.md:
 """
 
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import pandas as pd
+
+from analytical_engine.structure.breakout_retest import (
+    detect_breakout_retests as ae_detect_breakout,
+)
 
 
 @dataclass
@@ -27,13 +31,87 @@ class PriceActionPattern:
         return d
 
 
+def detect_breakout_retests(
+    df: pd.DataFrame,
+    swing_window: int = 3,
+    max_retest_bars: int = 20,
+    retest_tolerance_pct: float = 0.0015,
+    time_col: str = "open_time",
+    close_time_col: str = "close_time",
+    timeframe: str = "1h",
+) -> list[PriceActionPattern]:
+    """
+    Causal breakout-and-retest pattern detection conforming to Section 5.G of PROJECT_SPECIFICATION.md:
+    1. Breakout candle close beyond a confirmed swing level.
+    2. Retest within N bars (touching broken level zone).
+    3. Rejection confirmation (holding the level on close with directional rejection).
+
+    Delegates to analytical_engine.structure.breakout_retest and outputs confirmed
+    breakout-retest sequences as PriceActionPattern records.
+    """
+    if df.empty or len(df) < (2 * swing_window) + 3:
+        return []
+
+    records = ae_detect_breakout(
+        df=df,
+        swing_window=swing_window,
+        max_retest_bars=max_retest_bars,
+        retest_tolerance_pct=retest_tolerance_pct,
+        timeframe=timeframe,
+        time_col=time_col,
+        close_time_col=close_time_col,
+    )
+
+    patterns: list[PriceActionPattern] = []
+    for r in records:
+        if r.status == "SUCCESSFUL" and r.retest_time is not None and r.retest_price is not None:
+            # Rejection confirmation strength
+            patterns.append(
+                PriceActionPattern(
+                    pattern_type="BREAKOUT_RETEST",
+                    candle_time=r.retest_time,
+                    price=r.retest_price,
+                    strength=85.0,
+                    details={
+                        "direction": r.direction,
+                        "level_price": r.level_price,
+                        "breakout_price": r.breakout_price,
+                        "breakout_time": (
+                            r.breakout_time.isoformat()
+                            if hasattr(r.breakout_time, "isoformat")
+                            else str(r.breakout_time)
+                        ),
+                        "retest_time": (
+                            r.retest_time.isoformat()
+                            if hasattr(r.retest_time, "isoformat")
+                            else str(r.retest_time)
+                        ),
+                        "status": r.status,
+                        **r.details,
+                    },
+                )
+            )
+
+    return patterns
+
+
+# Alias for explicit clarity
+detect_breakout_retest_patterns = detect_breakout_retests
+
+
 def detect_price_action_patterns(
     df: pd.DataFrame,
     time_col: str = "open_time",
+    close_time_col: str = "close_time",
     wick_ratio_threshold: float = 0.60,
+    include_breakout_retest: bool = True,
+    swing_window: int = 3,
+    max_retest_bars: int = 20,
+    retest_tolerance_pct: float = 0.0015,
+    timeframe: str = "1h",
 ) -> list[PriceActionPattern]:
     """
-    Detect price action candle patterns across the DataFrame.
+    Detect price action candle patterns (pinbars, engulfing, breakout-retests) across the DataFrame.
     """
     if len(df) < 2:
         return []
@@ -55,6 +133,8 @@ def detect_price_action_patterns(
         time_val = times[i]
         if hasattr(time_val, "to_pydatetime"):
             time_val = time_val.to_pydatetime()
+        if isinstance(time_val, datetime) and time_val.tzinfo is None:
+            time_val = time_val.replace(tzinfo=UTC)
 
         candle_range = high_p - low_p + eps
         upper_wick = high_p - max(open_p, close_p)
@@ -126,4 +206,18 @@ def detect_price_action_patterns(
                     )
                 )
 
+    # 3. Causal Breakout & Retest Patterns
+    if include_breakout_retest and len(df) >= (2 * swing_window) + 3:
+        br_patterns = detect_breakout_retests(
+            df=df,
+            swing_window=swing_window,
+            max_retest_bars=max_retest_bars,
+            retest_tolerance_pct=retest_tolerance_pct,
+            time_col=time_col,
+            close_time_col=close_time_col,
+            timeframe=timeframe,
+        )
+        patterns.extend(br_patterns)
+
+    patterns.sort(key=lambda p: p.candle_time)
     return patterns

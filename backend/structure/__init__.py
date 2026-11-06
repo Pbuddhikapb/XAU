@@ -7,7 +7,11 @@ from backend.structure.breakout_retest import BreakoutRetestEvent, detect_breako
 from backend.structure.liquidity_sweeps import LiquiditySweepEvent, detect_liquidity_sweeps
 from backend.structure.market_structure import MarketStructureEvent, analyze_market_structure
 from backend.structure.mtf_manager import MTFAlignmentResult, MTFManager, TimeframeState
-from backend.structure.price_action import PriceActionPattern, detect_price_action_patterns
+from backend.structure.price_action import (
+    PriceActionPattern,
+    detect_breakout_retest_patterns,
+    detect_price_action_patterns,
+)
 from backend.structure.structure_engine import StructureEngine
 from backend.structure.support_resistance import SupportResistanceZone, detect_support_resistance_zones
 from backend.structure.swings import SwingPoint, detect_swings
@@ -24,6 +28,7 @@ __all__ = [
     "SwingPoint",
     "TimeframeState",
     "analyze_market_structure",
+    "detect_breakout_retest_patterns",
     "detect_breakout_retests",
     "detect_liquidity_sweeps",
     "detect_price_action_patterns",

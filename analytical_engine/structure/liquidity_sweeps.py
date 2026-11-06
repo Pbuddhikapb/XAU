@@ -14,6 +14,7 @@ Strictly conforms to Section 5.F of PROJECT_SPECIFICATION.md:
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from analytical_engine.models.outputs import LiquiditySweepRecord, PivotRecord
@@ -99,25 +100,29 @@ class LiquiditySweepDetector:
             c_p = closes[idx]
             c_close_time = dt_close_times[idx]
 
-            # 1. Update invalidation for active swings based on current candle close
+            # 1. Update invalidation for active swings based on recency and unbroken close policy
             for p in pivots:
-                if p.confirmed_index < idx:
-                    key = (p.index, p.pivot_type)
-                    if key in invalidated_levels or key in consumed_swept_levels:
-                        continue
+                key = (p.index, p.pivot_type)
+                if key in invalidated_levels or key in consumed_swept_levels:
+                    continue
 
-                    # Check expiration
-                    if (idx - p.index) > age_limit:
-                        invalidated_levels.add(key)
-                        continue
+                # Check expiration (recency)
+                if (idx - p.index) > age_limit:
+                    invalidated_levels.add(key)
+                    continue
 
-                    # Check structural breakout invalidation by close
-                    if p.pivot_type == "HIGH" and c_p > p.pivot_price:
-                        invalidated_levels.add(key)
-                    elif p.pivot_type == "LOW" and c_p < p.pivot_price:
-                        invalidated_levels.add(key)
+                # Check structural breakout invalidation by close (must be unbroken)
+                if idx > p.index:
+                    if p.pivot_type == "HIGH":
+                        broken_prior = idx > p.index + 1 and np.any(closes[p.index + 1 : idx] > p.pivot_price)
+                        if c_p > p.pivot_price or broken_prior:
+                            invalidated_levels.add(key)
+                    elif p.pivot_type == "LOW":
+                        broken_prior = idx > p.index + 1 and np.any(closes[p.index + 1 : idx] < p.pivot_price)
+                        if c_p < p.pivot_price or broken_prior:
+                            invalidated_levels.add(key)
 
-            # 2. Check for sweeps against active, confirmed, uninvalidated swings
+            # 2. Check for sweeps against active, confirmed, unbroken, unconsumed swings
             active_pivots = [
                 p for p in pivots
                 if p.confirmed_index < idx
@@ -127,8 +132,16 @@ class LiquiditySweepDetector:
 
             active_pivots.sort(key=lambda p: p.index, reverse=True)
 
+            swept_levels_this_candle: set[float] = set()
+
             for p in active_pivots:
                 key = (p.index, p.pivot_type)
+                level_key = round(float(p.pivot_price), 4)
+
+                # Enforce: one sweep event per level per candle
+                if level_key in swept_levels_this_candle:
+                    consumed_swept_levels.add(key)
+                    continue
 
                 if p.pivot_type == "HIGH":
                     if h_p > p.pivot_price and c_p <= p.pivot_price:
@@ -147,6 +160,14 @@ class LiquiditySweepDetector:
                             )
                         )
                         consumed_swept_levels.add(key)
+                        swept_levels_this_candle.add(level_key)
+                        # Mark all co-located pivots at this exact level as consumed
+                        for other_p in active_pivots:
+                            if (
+                                other_p.pivot_type == "HIGH"
+                                and round(float(other_p.pivot_price), 4) == level_key
+                            ):
+                                consumed_swept_levels.add((other_p.index, other_p.pivot_type))
 
                 elif p.pivot_type == "LOW":
                     if l_p < p.pivot_price and c_p >= p.pivot_price:
@@ -165,6 +186,14 @@ class LiquiditySweepDetector:
                             )
                         )
                         consumed_swept_levels.add(key)
+                        swept_levels_this_candle.add(level_key)
+                        # Mark all co-located pivots at this exact level as consumed
+                        for other_p in active_pivots:
+                            if (
+                                other_p.pivot_type == "LOW"
+                                and round(float(other_p.pivot_price), 4) == level_key
+                            ):
+                                consumed_swept_levels.add((other_p.index, other_p.pivot_type))
 
         sweeps.sort(key=lambda s: s.confirmed_candle_time)
         return sweeps

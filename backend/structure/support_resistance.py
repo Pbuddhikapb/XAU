@@ -47,19 +47,25 @@ class SupportResistanceZone:
 def detect_support_resistance_zones(
     df: pd.DataFrame,
     swing_window: int = 3,
-    clustering_tolerance_pct: float = 0.0012,  # 0.12% clustering threshold (~$3 on $2500 gold)
+    atr_multiplier: float = 0.5,
+    atr_period: int = 14,
+    clustering_tolerance_pct: float | None = None,
     as_of_time: datetime | None = None,
     time_col: str = "open_time",
     close_time_col: str = "close_time",
 ) -> list[SupportResistanceZone]:
     """
     Cluster confirmed swing points into horizontal Support and Resistance zones.
-    Point-in-time causal: only evaluates swings and price action available up to as_of_time.
+    Point-in-time causal: only evaluates swings, ATR, and price action available up to as_of_time.
+    Eliminates iloc[-1] lookahead leakage.
+    Tolerance is dynamically scaled by point-in-time ATR (atr_multiplier * ATR).
 
     Parameters:
         df: Input DataFrame containing open, high, low, close, and timestamp columns.
         swing_window: Shoulder radius k for swing detection.
-        clustering_tolerance_pct: Relative price tolerance for clustering touches into zones.
+        atr_multiplier: Volatility multiplier for ATR-scaled clustering tolerance.
+        atr_period: Period for ATR calculation.
+        clustering_tolerance_pct: Optional explicit percentage tolerance override.
         as_of_time: Evaluation timestamp cutoff. If None, uses the last bar's timestamp.
         time_col: Open timestamp column.
         close_time_col: Close timestamp column.
@@ -67,6 +73,8 @@ def detect_support_resistance_zones(
     records = ae_detect_sr(
         df=df,
         swing_window=swing_window,
+        atr_multiplier=atr_multiplier,
+        atr_period=atr_period,
         clustering_tolerance_pct=clustering_tolerance_pct,
         as_of_time=as_of_time,
         time_col=time_col,

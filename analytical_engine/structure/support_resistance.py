@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 import numpy as np
 import pandas as pd
 
+from analytical_engine.indicators.volatility import calculate_atr
 from analytical_engine.models.outputs import PivotRecord, SupportResistanceZoneRecord
 from analytical_engine.structure.pivots import PivotDetector
 
@@ -20,15 +21,21 @@ from analytical_engine.structure.pivots import PivotDetector
 class SRZoneDetector:
     """
     Clusters confirmed swing points into horizontal Support and Resistance zones.
+    Point-in-time causal: evaluates exclusively up to as_of_time without iloc[-1] dependence.
+    Dynamically scales clustering tolerance using ATR (Average True Range).
     """
 
     def __init__(
         self,
         swing_window: int = 3,
-        clustering_tolerance_pct: float = 0.0012,
+        atr_multiplier: float = 0.5,
+        atr_period: int = 14,
+        clustering_tolerance_pct: float | None = None,
         timeframe: str = "1h",
     ):
         self.swing_window = swing_window
+        self.atr_multiplier = atr_multiplier
+        self.atr_period = atr_period
         self.clustering_tolerance_pct = clustering_tolerance_pct
         self.timeframe = timeframe
 
@@ -37,6 +44,8 @@ class SRZoneDetector:
         df: pd.DataFrame,
         pivots: list[PivotRecord] | None = None,
         as_of_time: datetime | None = None,
+        atr_multiplier: float | None = None,
+        atr_period: int | None = None,
         clustering_tolerance_pct: float | None = None,
         timeframe: str | None = None,
         time_col: str = "open_time",
@@ -44,43 +53,63 @@ class SRZoneDetector:
     ) -> list[SupportResistanceZoneRecord]:
         """
         Cluster confirmed swing points into point-in-time S/R zones.
+        Evaluates data strictly up to as_of_time, completely eliminating iloc[-1] lookahead.
         """
-        tol = clustering_tolerance_pct or self.clustering_tolerance_pct
         tf = timeframe or self.timeframe
+        mult = atr_multiplier if atr_multiplier is not None else self.atr_multiplier
+        period = atr_period if atr_period is not None else self.atr_period
 
-        if df.empty or len(df) < (2 * self.swing_window) + 2:
+        if df.empty:
             return []
 
-        # Slice data up to as_of_time if provided to ensure strict causality
+        # Slice data strictly up to as_of_time to ensure causality
+        time_series = pd.to_datetime(df[time_col], utc=True)
         if as_of_time is not None:
-            if as_of_time.tzinfo is None:
-                as_of_time = as_of_time.replace(tzinfo=UTC)
-
-            time_series = pd.to_datetime(df[time_col], utc=True)
-            eval_df = df.loc[time_series <= as_of_time].copy()
-            if len(eval_df) < (2 * self.swing_window) + 2:
-                return []
+            as_of_dt = as_of_time if as_of_time.tzinfo else as_of_time.replace(tzinfo=UTC)
+            eval_mask = time_series <= as_of_dt
         else:
-            eval_df = df.copy()
+            as_of_dt = time_series.max().to_pydatetime()
+            eval_mask = pd.Series(True, index=df.index)
+
+        eval_df = df.loc[eval_mask].sort_values(by=time_col).reset_index(drop=True)
+        if len(eval_df) < (2 * self.swing_window) + 2:
+            return []
 
         if pivots is None:
             detector = PivotDetector(left_bars=self.swing_window, right_bars=self.swing_window)
             pivots = detector.find_pivots(
                 eval_df,
-                current_time=as_of_time,
+                current_time=as_of_dt,
                 time_col=time_col,
                 close_time_col=close_time_col,
             )
 
-        if as_of_time is not None:
-            confirmed_pivots = [p for p in pivots if p.confirmation_time <= as_of_time]
-        else:
-            confirmed_pivots = pivots
+        confirmed_pivots = [p for p in pivots if p.confirmation_time <= as_of_dt]
 
         if not confirmed_pivots:
             return []
 
-        current_price = float(eval_df["close"].iloc[-1])
+        # Determine current price point-in-time strictly without iloc[-1] dependence
+        eval_times = pd.to_datetime(eval_df[time_col], utc=True)
+        latest_idx = eval_times.idxmax()
+        current_price = float(eval_df.loc[latest_idx, "close"])
+
+        # Calculate point-in-time ATR
+        atr_series = calculate_atr(eval_df["high"], eval_df["low"], eval_df["close"], period=period)
+        valid_atrs = atr_series[~np.isnan(atr_series)]
+        current_atr = float(valid_atrs[-1]) if len(valid_atrs) > 0 else float(current_price * 0.0012)
+
+        # Compute absolute clustering tolerance
+        tol_override = (
+            clustering_tolerance_pct
+            if clustering_tolerance_pct is not None
+            else self.clustering_tolerance_pct
+        )
+        if tol_override is not None:
+            tol_abs = float(tol_override * current_price)
+        else:
+            tol_abs = float(mult * current_atr)
+
         high_pivots = [p for p in confirmed_pivots if p.pivot_type == "HIGH"]
         low_pivots = [p for p in confirmed_pivots if p.pivot_type == "LOW"]
 
@@ -96,8 +125,8 @@ class SRZoneDetector:
 
             for pt in sorted_points[1:]:
                 cluster_avg = sum(p.pivot_price for p in curr_cluster) / len(curr_cluster)
-                diff_pct = abs(pt.pivot_price - cluster_avg) / cluster_avg
-                if diff_pct <= tol:
+                diff = abs(pt.pivot_price - cluster_avg)
+                if diff <= tol_abs:
                     curr_cluster.append(pt)
                 else:
                     clusters.append(curr_cluster)
@@ -125,20 +154,20 @@ class SRZoneDetector:
 
                 if is_resistance:
                     z_type = "RESISTANCE"
-                    break_threshold = max_p * (1.0 + tol)
+                    break_threshold = max_p + tol_abs
                     for k in range(last_conf_idx + 1, len(closes)):
                         if closes[k] > break_threshold:
                             is_broken = True
                             break
-                    is_active = (not is_broken) and (current_price <= max_p * 1.002)
+                    is_active = (not is_broken) and (current_price <= max_p + tol_abs)
                 else:
                     z_type = "SUPPORT"
-                    break_threshold = min_p * (1.0 - tol)
+                    break_threshold = min_p - tol_abs
                     for k in range(last_conf_idx + 1, len(closes)):
                         if closes[k] < break_threshold:
                             is_broken = True
                             break
-                    is_active = (not is_broken) and (current_price >= min_p * 0.998)
+                    is_active = (not is_broken) and (current_price >= min_p - tol_abs)
 
                 strength = min(100.0, round(float(touches * 25.0), 2))
 
@@ -172,7 +201,9 @@ def detect_support_resistance_zones(
     df: pd.DataFrame,
     pivots: list[PivotRecord] | None = None,
     swing_window: int = 3,
-    clustering_tolerance_pct: float = 0.0012,
+    atr_multiplier: float = 0.5,
+    atr_period: int = 14,
+    clustering_tolerance_pct: float | None = None,
     as_of_time: datetime | None = None,
     timeframe: str = "1h",
     time_col: str = "open_time",
@@ -181,6 +212,8 @@ def detect_support_resistance_zones(
     """Convenience functional wrapper delegating to SRZoneDetector."""
     detector = SRZoneDetector(
         swing_window=swing_window,
+        atr_multiplier=atr_multiplier,
+        atr_period=atr_period,
         clustering_tolerance_pct=clustering_tolerance_pct,
         timeframe=timeframe,
     )
@@ -188,6 +221,8 @@ def detect_support_resistance_zones(
         df=df,
         pivots=pivots,
         as_of_time=as_of_time,
+        atr_multiplier=atr_multiplier,
+        atr_period=atr_period,
         clustering_tolerance_pct=clustering_tolerance_pct,
         timeframe=timeframe,
         time_col=time_col,

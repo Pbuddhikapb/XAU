@@ -285,3 +285,93 @@ def test_liquidity_sweep_lookahead_adversarial():
     s_shock = [s for s in sweeps_shocked if s.confirmed_candle_time == sweeps_base[0].confirmed_candle_time][0]
     assert s_shock.swept_level == sweeps_base[0].swept_level
     assert s_shock.penetration_price == sweeps_base[0].penetration_price
+
+
+def test_duplicate_levels_same_candle_only_one_sweep():
+    """Verify that multiple swing highs at the exact same level produce exactly one sweep on a candle."""
+    base_time = datetime(2026, 10, 20, 0, 0, tzinfo=UTC)
+    n = 20
+    times = [base_time + timedelta(hours=i) for i in range(n)]
+
+    opens = [2650.0] * n
+    highs = [2655.0] * n
+    lows = [2645.0] * n
+    closes = [2650.0] * n
+
+    # Swing high 1 at bar 3: Peak High = 2670.0 (confirmed at bar 5 with window=2)
+    highs[3] = 2670.0
+    opens[3] = 2662.0
+    closes[3] = 2665.0
+
+    # Swing high 2 at bar 7: Peak High = 2670.0 (confirmed at bar 9 with window=2)
+    highs[7] = 2670.0
+    opens[7] = 2662.0
+    closes[7] = 2665.0
+
+    # Candle at bar 12 sweeps 2670.0: High = 2675.0, Close = 2664.0
+    highs[12] = 2675.0
+    closes[12] = 2664.0
+
+    # Subsequent candle at bar 13 also wicks above 2670.0 (High = 2673.0, Close = 2665.0)
+    highs[13] = 2673.0
+    closes[13] = 2665.0
+
+    df = pd.DataFrame(
+        {
+            "open_time": times,
+            "open": opens,
+            "high": highs,
+            "low": lows,
+            "close": closes,
+            "volume": [100.0] * n,
+        }
+    )
+
+    sweeps = detect_liquidity_sweeps(df, timeframe="1h", swing_window=2)
+    # Exactly ONE sweep must be generated at bar 12, and ZERO on bar 13 (consumed)
+    assert len(sweeps) == 1
+    assert sweeps[0].swept_level == 2670.0
+    assert sweeps[0].penetration_price == 2675.0
+    assert sweeps[0].confirmed_candle_time == times[12] + timedelta(hours=1)
+
+
+def test_broken_swing_level_not_swept():
+    """Verify that a swing level broken by close prior to the sweep candle is invalidated."""
+    base_time = datetime(2026, 10, 20, 0, 0, tzinfo=UTC)
+    n = 15
+    times = [base_time + timedelta(hours=i) for i in range(n)]
+
+    opens = [2650.0] * n
+    highs = [2655.0] * n
+    lows = [2645.0] * n
+    closes = [2650.0] * n
+
+    # Swing high at bar 3: Peak High = 2670.0
+    highs[3] = 2670.0
+    closes[3] = 2665.0
+
+    # Candle 6 closes above 2670.0 -> breaks the level (and bar 7 is higher so bar 6 is not a swing high)
+    highs[6] = 2671.0
+    closes[6] = 2671.0
+    highs[7] = 2672.0
+    closes[7] = 2660.0
+
+    # Candle 10 wicks up to 2674.0 and closes at 2665.0
+    highs[10] = 2674.0
+    closes[10] = 2665.0
+
+    df = pd.DataFrame(
+        {
+            "open_time": times,
+            "open": opens,
+            "high": highs,
+            "low": lows,
+            "close": closes,
+            "volume": [100.0] * n,
+        }
+    )
+
+    sweeps = detect_liquidity_sweeps(df, timeframe="1h", swing_window=2)
+    # The broken level 2670.0 must NOT be swept
+    assert not any(s.swept_level == 2670.0 for s in sweeps)
+

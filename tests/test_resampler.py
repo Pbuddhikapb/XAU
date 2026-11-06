@@ -162,3 +162,64 @@ def test_resample_empty_dataframe():
     empty_df = pd.DataFrame()
     res = CandleResampler.resample_ohlcv(empty_df, target_timeframe="5m")
     assert res.empty
+
+
+def test_resample_cme_session_day_and_reconciliation():
+    """
+    Verify CME Session Day (18:00 ET to 17:00 ET) 1D aggregation and reconciliation:
+    1. Aggregates Sunday 18:00 ET to Monday 17:00 ET into Monday session (1,380 active bars).
+    2. Respects config flag ENABLE_CME_SESSION_DAILY_CANDLES.
+    3. Reconciles against native Binance 1d klines and documents structural differences.
+    """
+    from unittest.mock import patch
+
+    # Generate 1m bars from Sunday 18:00 EDT (22:00 UTC) to Monday 17:00 EDT (21:00 UTC)
+    # Total = 23 hours = 1,380 minutes
+    times = pd.date_range("2026-10-18 22:00", "2026-10-19 20:59", freq="1min", tz="UTC")
+    assert len(times) == 1380
+
+    df_1m = pd.DataFrame({
+        "open_time": times,
+        "open": [2650.0 + (i * 0.01) for i in range(1380)],
+        "high": [2655.0 + (i * 0.01) for i in range(1380)],
+        "low": [2645.0 + (i * 0.01) for i in range(1380)],
+        "close": [2651.0 + (i * 0.01) for i in range(1380)],
+        "volume": [10.0] * 1380,
+    })
+
+    # Resample to 1d_cme
+    df_cme = CandleResampler.resample_ohlcv(df_1m, target_timeframe="1d_cme")
+    assert len(df_cme) == 1
+    row = df_cme.iloc[0]
+    assert row["timeframe"] == "1d_cme"
+    assert row["bars_count"] == 1380
+    assert bool(row["is_confirmed"]) is True
+    assert row["session_date"] == "2026-10-19"
+    assert row["open"] == df_1m["open"].iloc[0]
+    assert row["close"] == df_1m["close"].iloc[-1]
+    assert row["volume"] == 13800.0
+
+    # Config flag check: when disabled, returns empty DataFrame
+    with patch("backend.config.settings.ENABLE_CME_SESSION_DAILY_CANDLES", False):
+        disabled_res = CandleResampler.resample_cme_session_day(df_1m)
+        assert disabled_res.empty
+
+    # Reconcile against synthetic native Binance 1d candle (00:00 to 24:00 UTC)
+    native_1d = pd.DataFrame({
+        "open_time": [pd.Timestamp("2026-10-19 00:00:00+00:00")],
+        "open": [2652.0],
+        "high": [2670.0],
+        "low": [2644.0],
+        "close": [2664.0],
+        "volume": [14400.0],
+    })
+
+    recon = CandleResampler.reconcile_cme_vs_binance_1d(df_cme, native_1d)
+    assert recon["matched_sessions"] == 1
+    assert "mean_open_diff" in recon
+    assert "mean_close_diff" in recon
+    assert "mean_volume_coverage_ratio" in recon
+    assert "documentation" in recon
+    assert "1d_cme" in recon["documentation"]
+    assert "1,380" in recon["documentation"]
+

@@ -12,6 +12,8 @@ Validates:
 7. Sharp boundary transitions at 17:00:00 and 18:00:00 ET.
 """
 
+import json
+import urllib.error
 from datetime import UTC, datetime
 
 from backend.data.session_tracker import (
@@ -218,3 +220,137 @@ def test_binance_static_schedule_provider():
     assert res.state == TradFiSessionState.REGULAR
     assert res.source == "binance_static_config"
     assert res.is_uncertain is False
+
+
+def test_cme_holidays_and_early_closes():
+    """Verify that CME Gold holidays (Good Friday, Christmas) and early closes (Thanksgiving) are respected."""
+    fallback = FallbackScheduleProvider()
+
+    # 1. Good Friday 2026: April 3, 2026 - full day closure
+    good_friday_noon = datetime(2026, 4, 3, 16, 0, tzinfo=UTC)  # 12:00 EDT
+    res_gf = fallback.get_session_state(good_friday_noon)
+    assert res_gf.state == TradFiSessionState.NO_TRADING
+    assert "Good Friday" in res_gf.details.get("reason", "")
+
+    # 2. Christmas Day: Dec 25, 2026 - full day closure
+    xmas_noon = datetime(2026, 12, 25, 17, 0, tzinfo=UTC)  # 12:00 EST
+    res_xmas = fallback.get_session_state(xmas_noon)
+    assert res_xmas.state == TradFiSessionState.NO_TRADING
+    assert "Christmas Day" in res_xmas.details.get("reason", "")
+
+    # 3. Thanksgiving Day 2026: Nov 26, 2026 - early close at 13:00 ET
+    # 12:00 ET (17:00 UTC) -> Still REGULAR
+    thanksgiving_pre_close = datetime(2026, 11, 26, 17, 0, tzinfo=UTC)
+    res_tg_pre = fallback.get_session_state(thanksgiving_pre_close)
+    assert res_tg_pre.state == TradFiSessionState.REGULAR
+
+    # 14:00 ET (19:00 UTC) -> Closed early (NO_TRADING)
+    thanksgiving_post_close = datetime(2026, 11, 26, 19, 0, tzinfo=UTC)
+    res_tg_post = fallback.get_session_state(thanksgiving_post_close)
+    assert res_tg_post.state == TradFiSessionState.NO_TRADING
+    assert "Thanksgiving" in res_tg_post.details.get("reason", "")
+
+
+def test_binance_schedule_poller_and_caching(tmp_path):
+    """Verify BinanceSchedulePoller caching to disk, handling errors, and fallback to ET calendar."""
+    from unittest.mock import MagicMock, patch
+
+    from backend.data.session_tracker import BinanceSchedulePoller
+
+    cache_file = tmp_path / "test_schedule_cache.json"
+    poller = BinanceSchedulePoller(cache_path=cache_file)
+
+    mock_api_payload = {
+        "updateTime": 1761286643918,
+        "marketSchedules": {
+            "COMMODITY": {
+                "sessions": [
+                    {
+                        "sessionType": "REGULAR",
+                        "startTime": 1760000000000,
+                        "endTime": 1770000000000,
+                    }
+                ]
+            }
+        },
+    }
+
+    # 1. Successful poll: writes to cache and returns payload
+    mock_resp = MagicMock()
+    mock_resp.__enter__.return_value = mock_resp
+    mock_resp.status = 200
+    mock_resp.read.return_value = json.dumps(mock_api_payload).encode("utf-8")
+
+    with patch("urllib.request.OpenerDirector.open", return_value=mock_resp):
+        payload, source = poller.poll()
+        assert payload is not None
+        assert source == "binance_schedule_api"
+        assert cache_file.exists()
+
+    # 2. HTTP error: falls back to disk cache
+    err = urllib.error.HTTPError("url", 500, "Server Error", {}, None)  # type: ignore[arg-type]
+    with patch("urllib.request.OpenerDirector.open", side_effect=err):
+        cached_payload, source_cached = poller.poll()
+        assert cached_payload is not None
+        assert source_cached == "binance_schedule_cache"
+
+    # 3. HTTP error with no disk cache: falls back to CME ET calendar
+    cache_file.unlink()
+    with patch("urllib.request.OpenerDirector.open", side_effect=Exception("Network down")):
+        none_payload, source_fallback = poller.poll()
+        assert none_payload is None
+        assert source_fallback == "fallback_cme_calendar"
+
+
+def test_mark_candles_session_states():
+    """Verify that candles are correctly annotated with session states, weights, and exclusion reasons."""
+    import pandas as pd
+
+    # Construct candles spanning:
+    # 1. Wednesday 20:30 UTC (16:30 EDT) -> REGULAR, active=True, weight=1.0
+    # 2. Wednesday 21:30 UTC (17:30 EDT) -> MAINTENANCE (DAILY_BREAK), active=False, weight=0.1
+    # 3. Saturday 12:00 UTC -> NO_TRADING (WEEKEND_CLOSED), active=False, weight=0.0
+    # 4. Saturday 13:00 UTC -> flatline/zero vol -> FROZEN_INDEX, weight=0.0
+    times = [
+        datetime(2026, 10, 28, 20, 30, tzinfo=UTC),
+        datetime(2026, 10, 28, 21, 30, tzinfo=UTC),
+        datetime(2026, 10, 31, 12, 0, tzinfo=UTC),
+        datetime(2026, 10, 31, 13, 0, tzinfo=UTC),
+    ]
+    df = pd.DataFrame({
+        "open_time": times,
+        "open": [2650.0, 2652.0, 2652.0, 2652.0],
+        "high": [2655.0, 2652.0, 2652.0, 2652.0],
+        "low": [2648.0, 2652.0, 2652.0, 2652.0],
+        "close": [2652.0, 2652.0, 2652.0, 2652.0],
+        "volume": [100.0, 5.0, 0.0, 0.0],
+    })
+
+    marked = SessionTracker.mark_candles(df)
+    assert "tradfi_session_state" in marked.columns
+    assert "is_tradfi_active" in marked.columns
+    assert "analysis_weight" in marked.columns
+    assert "exclusion_reason" in marked.columns
+
+    # Bar 0: Active regular trading
+    assert marked.loc[0, "tradfi_session_state"] == "REGULAR"
+    assert bool(marked.loc[0, "is_tradfi_active"]) is True
+    assert float(marked.loc[0, "analysis_weight"]) == 1.0
+    assert marked.loc[0, "exclusion_reason"] is None
+
+    # Bar 1: Daily maintenance break
+    assert marked.loc[1, "tradfi_session_state"] == "MAINTENANCE"
+    assert bool(marked.loc[1, "is_tradfi_active"]) is False
+    assert float(marked.loc[1, "analysis_weight"]) == 0.1
+    assert marked.loc[1, "exclusion_reason"] == "DAILY_BREAK"
+
+    # Bar 2 & 3: Weekend closed and frozen index
+    assert marked.loc[2, "tradfi_session_state"] == "NO_TRADING"
+    assert bool(marked.loc[2, "is_tradfi_active"]) is False
+    assert float(marked.loc[2, "analysis_weight"]) == 0.0
+    assert marked.loc[2, "exclusion_reason"] in ("WEEKEND_CLOSED", "FROZEN_INDEX")
+
+    # Bar 3 has flat price and zero volume while closed -> FROZEN_INDEX
+    assert marked.loc[3, "exclusion_reason"] == "FROZEN_INDEX"
+    assert float(marked.loc[3, "analysis_weight"]) == 0.0
+

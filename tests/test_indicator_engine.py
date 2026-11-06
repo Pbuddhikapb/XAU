@@ -153,3 +153,41 @@ async def test_process_and_persist_candle_close():
     snap = await IndicatorEngine.process_and_persist_candle_close(candle, symbol="XAUUSDT", timeframe="1m")
     # Even if DB has few rows, it handles gracefully without crashing
     assert snap is None or isinstance(snap, dict)
+
+
+def test_indicator_engine_session_marking_and_filtering():
+    """Verify that compute_all_indicators marks candle session states and supports active filtering."""
+    base_time = datetime(2026, 10, 28, 20, 0, tzinfo=UTC)  # Wednesday 16:00 EDT
+    # Create 10 bars spanning active trading, daily break (21:00 UTC = 17:00 EDT), and re-opening
+    times = [base_time + timedelta(minutes=30 * i) for i in range(10)]
+    df = pd.DataFrame({
+        "open_time": times,
+        "open": [2650.0 + i for i in range(10)],
+        "high": [2655.0 + i for i in range(10)],
+        "low": [2645.0 + i for i in range(10)],
+        "close": [2652.0 + i for i in range(10)],
+        "volume": [100.0] * 10,
+        "taker_buy_volume": [50.0] * 10,
+    })
+
+    # 1. Default: enrich with session state columns
+    res_default = IndicatorEngine.compute_all_indicators(df)
+    assert "tradfi_session_state" in res_default.columns
+    assert "is_tradfi_active" in res_default.columns
+    assert "analysis_weight" in res_default.columns
+    assert "exclusion_reason" in res_default.columns
+    assert len(res_default) == 10
+
+    # Bars during 21:00-22:00 UTC (17:00-18:00 EDT) should be marked as MAINTENANCE (DAILY_BREAK)
+    break_bars = res_default[res_default["open_time"] == datetime(2026, 10, 28, 21, 30, tzinfo=UTC)]
+    assert len(break_bars) == 1
+    assert break_bars.iloc[0]["tradfi_session_state"] == "MAINTENANCE"
+    assert bool(break_bars.iloc[0]["is_tradfi_active"]) is False
+    assert float(break_bars.iloc[0]["analysis_weight"]) == 0.1
+    assert break_bars.iloc[0]["exclusion_reason"] == "DAILY_BREAK"
+
+    # 2. Filter inactive: should exclude maintenance break bars
+    res_filtered = IndicatorEngine.compute_all_indicators(df, filter_inactive_sessions=True)
+    assert len(res_filtered) < 10
+    assert not (res_filtered["tradfi_session_state"] == "MAINTENANCE").any()
+

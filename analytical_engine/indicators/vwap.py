@@ -72,13 +72,30 @@ def calculate_session_anchored_vwap(
         session_id = shifted_time.dt.floor("1D")
         anchor_times = session_id + pd.Timedelta(hours=session_reset_hour_utc)
     else:
-        # Dynamic timezone-aware session anchoring
+        # Dynamic timezone-aware session anchoring strictly derived from wall-clock local hour
+        # (e.g. 18:00 America/New_York ET), completely immune to 23h/25h DST transition day offsets.
         local_times = candles[time_col].dt.tz_convert(tz_obj)
-        shifted_local = local_times - pd.Timedelta(hours=session_reset_hour_local)
-        session_id = shifted_local.dt.floor("1D")
-        # Anchor timestamp in UTC
-        anchor_local = session_id + pd.Timedelta(hours=session_reset_hour_local)
-        anchor_times = anchor_local.dt.tz_convert("UTC")
+        is_after_reset = (local_times.dt.hour > session_reset_hour_local) | (
+            (local_times.dt.hour == session_reset_hour_local) & (local_times.dt.minute >= 0)
+        )
+        curr_dates = local_times.dt.date
+        local_naive_dates = pd.to_datetime(curr_dates)
+        prev_dates = (local_naive_dates - pd.Timedelta(days=1)).dt.date
+        session_dates = curr_dates.where(is_after_reset, prev_dates)
+
+        session_id = session_dates.astype(str)
+        unique_dates = session_dates.unique()
+        anchor_map = {
+            d: pd.Timestamp(
+                year=d.year,
+                month=d.month,
+                day=d.day,
+                hour=session_reset_hour_local,
+                tz=tz_obj,
+            ).tz_convert("UTC")
+            for d in unique_dates
+        }
+        anchor_times = pd.Series(session_dates.map(anchor_map), index=candles.index)
 
     candles["_session_id"] = session_id
 

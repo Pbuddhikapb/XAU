@@ -26,6 +26,7 @@ from backend.analytics.volatility import (
 )
 from backend.analytics.volume import calculate_rvol, calculate_taker_buy_ratio
 from backend.analytics.vwap import calculate_session_anchored_vwap
+from backend.data.session_tracker import SessionTracker
 from backend.database import get_async_session
 from backend.models.tables import IndicatorSnapshot, OHLCVCandle
 
@@ -41,10 +42,14 @@ class IndicatorEngine:
         symbol: str = "XAUUSDT",
         timeframe: str = "1h",
         time_col: str = "open_time",
+        filter_inactive_sessions: bool = False,
+        downweight_inactive: bool = False,
     ) -> pd.DataFrame:
         """
         Compute full matrix of technical indicators on a DataFrame of OHLCV candles.
         Input DataFrame must contain columns: open, high, low, close, volume, taker_buy_volume.
+        Enriches candles with session states (REGULAR, MAINTENANCE, NO_TRADING) and weights.
+        Supports excluding or volume down-weighting inactive break/weekend/holiday periods.
         """
         if df.empty or len(df) < 5:
             return df.copy()
@@ -55,10 +60,23 @@ class IndicatorEngine:
         if not pd.api.types.is_datetime64_any_dtype(result[time_col]):
             result[time_col] = pd.to_datetime(result[time_col], utc=True)
 
+        # Mark candles with session states and weights
+        result = SessionTracker.mark_candles(result, time_col=time_col)
+
+        if filter_inactive_sessions and "is_tradfi_active" in result.columns:
+            result = result[result["is_tradfi_active"]].copy()
+            if len(result) < 5:
+                return result
+
         close = result["close"].astype(float)
         high = result["high"].astype(float)
         low = result["low"].astype(float)
-        volume = result["volume"].astype(float)
+
+        raw_volume = result["volume"].astype(float)
+        if downweight_inactive and "analysis_weight" in result.columns:
+            volume = raw_volume * result["analysis_weight"].astype(float)
+        else:
+            volume = raw_volume
         taker_buy_vol = (
             result["taker_buy_volume"].astype(float)
             if "taker_buy_volume" in result.columns

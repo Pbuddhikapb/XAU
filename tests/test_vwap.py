@@ -129,6 +129,67 @@ def test_vwap_dst_transition():
     assert np.isclose(res_winter.loc[2, "vwap"], tp_winter_23)
 
 
+def test_vwap_dst_transitions_march_and_november_2026():
+    """
+    Verify exact time-boundary behavior across both 2026 US Daylight Saving Time transitions:
+    1. Spring forward: Sunday, March 8, 2026 (EST -> EDT).
+       - Prior session resets at 23:00 UTC (18:00 EST on March 7).
+       - At 21:00 UTC on March 8 (17:00 EDT), session is still from March 7.
+       - At 22:00 UTC on March 8 (18:00 EDT), session resets to 22:00 UTC (18:00 EDT).
+    2. Fall back: Sunday, November 1, 2026 (EDT -> EST).
+       - Prior session resets at 22:00 UTC (18:00 EDT on Oct 31).
+       - At 22:00 UTC on November 1 (17:00 EST), session is still from Oct 31.
+       - At 23:00 UTC on November 1 (18:00 EST), session resets to 23:00 UTC (18:00 EST).
+    """
+    # 1. March 2026 Spring Forward:
+    times_march = [
+        datetime(2026, 3, 7, 23, 0, tzinfo=UTC),   # March 7 18:00 EST -> Reset to 23:00 UTC
+        datetime(2026, 3, 8, 21, 0, tzinfo=UTC),   # March 8 17:00 EDT -> Pre-reset
+        datetime(2026, 3, 8, 22, 0, tzinfo=UTC),   # March 8 18:00 EDT -> New session reset to 22:00 UTC
+        datetime(2026, 3, 9, 2, 0, tzinfo=UTC),    # March 8 21:00 EDT -> In-session
+    ]
+    df_march = pd.DataFrame({
+        "open_time": times_march,
+        "high": [2600.0, 2610.0, 2620.0, 2630.0],
+        "low": [2590.0, 2600.0, 2610.0, 2620.0],
+        "close": [2595.0, 2605.0, 2615.0, 2625.0],
+        "volume": [100.0, 100.0, 100.0, 100.0],
+    })
+    res_march = calculate_session_anchored_vwap(df_march)
+    # Check anchor times in UTC
+    assert res_march.loc[0, "anchor_time"] == pd.Timestamp("2026-03-07 23:00:00+00:00")
+    assert res_march.loc[1, "anchor_time"] == pd.Timestamp("2026-03-07 23:00:00+00:00")
+    assert res_march.loc[2, "anchor_time"] == pd.Timestamp("2026-03-08 22:00:00+00:00")
+    assert res_march.loc[3, "anchor_time"] == pd.Timestamp("2026-03-08 22:00:00+00:00")
+    # At index 2 (22:00 UTC), VWAP must equal typical price of bar 2
+    tp_march_22 = (2620.0 + 2610.0 + 2615.0) / 3.0
+    assert np.isclose(res_march.loc[2, "vwap"], tp_march_22)
+
+    # 2. November 2026 Fall Back:
+    times_nov = [
+        datetime(2026, 10, 31, 22, 0, tzinfo=UTC),  # Oct 31 18:00 EDT -> Reset to 22:00 UTC
+        datetime(2026, 11, 1, 22, 0, tzinfo=UTC),   # Nov 1 17:00 EST -> Pre-reset
+        datetime(2026, 11, 1, 23, 0, tzinfo=UTC),   # Nov 1 18:00 EST -> New session reset to 23:00 UTC
+        datetime(2026, 11, 2, 2, 0, tzinfo=UTC),    # Nov 1 21:00 EST -> In-session
+    ]
+    df_nov = pd.DataFrame({
+        "open_time": times_nov,
+        "high": [2700.0, 2710.0, 2720.0, 2730.0],
+        "low": [2690.0, 2700.0, 2710.0, 2720.0],
+        "close": [2695.0, 2705.0, 2715.0, 2725.0],
+        "volume": [100.0, 100.0, 100.0, 100.0],
+    })
+    res_nov = calculate_session_anchored_vwap(df_nov)
+    # Check anchor times in UTC
+    assert res_nov.loc[0, "anchor_time"] == pd.Timestamp("2026-10-31 22:00:00+00:00")
+    assert res_nov.loc[1, "anchor_time"] == pd.Timestamp("2026-10-31 22:00:00+00:00")
+    assert res_nov.loc[2, "anchor_time"] == pd.Timestamp("2026-11-01 23:00:00+00:00")
+    assert res_nov.loc[3, "anchor_time"] == pd.Timestamp("2026-11-01 23:00:00+00:00")
+    # At index 2 (23:00 UTC), VWAP must equal typical price of bar 2
+    tp_nov_23 = (2720.0 + 2710.0 + 2715.0) / 3.0
+    assert np.isclose(res_nov.loc[2, "vwap"], tp_nov_23)
+
+
 def test_evaluate_vwap_position():
     base_time = datetime(2026, 10, 20, 23, 0, tzinfo=UTC)
     times = [base_time + timedelta(hours=i) for i in range(5)]

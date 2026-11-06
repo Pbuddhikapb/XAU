@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     # Historical Inception Timestamp: 2025-12-11 08:05:00 UTC
     CONTRACT_ONBOARD_TIME_MS: int = 1765440300000
 
+    # CME Session Day (18:00 ET to 17:00 ET) 1D aggregation alongside UTC 1D candle
+    ENABLE_CME_SESSION_DAILY_CANDLES: bool = True
+
     model_config = SettingsConfigDict(
         env_file=str(Path(__file__).parent.parent / ".env"), env_file_encoding="utf-8", extra="ignore"
     )

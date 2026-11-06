@@ -1,0 +1,51 @@
+{
+  "symbol": "XAUUSDT",
+  "total_1m_candles": 474715,
+  "distinct_1m_candles": 474715,
+  "duplicate_count": 0,
+  "invalid_ohlc_count": 0,
+  "min_open_time": "2025-12-11T08:05:00+00:00",
+  "max_open_time": "2026-11-05T23:59:00+00:00",
+  "funding_history_count": 1977,
+  "mark_index_prices_count": 471835,
+  "total_gaps_found": 0,
+  "unresolved_gaps_count": 0,
+  "gaps": [],
+  "reconciliation": {
+    "5m": {
+      "matched_bars": 8640,
+      "is_reconciled": true,
+      "max_price_diff": 0.0,
+      "max_volume_diff": 3.637978807091713e-12,
+      "price_tolerance": 0.05
+    },
+    "15m": {
+      "matched_bars": 2880,
+      "is_reconciled": true,
+      "max_price_diff": 0.0,
+      "max_volume_diff": 7.275957614183426e-12,
+      "price_tolerance": 0.05
+    },
+    "1h": {
+      "matched_bars": 720,
+      "is_reconciled": true,
+      "max_price_diff": 0.0,
+      "max_volume_diff": 1.4551915228366852e-11,
+      "price_tolerance": 0.05
+    },
+    "4h": {
+      "matched_bars": 180,
+      "is_reconciled": true,
+      "max_price_diff": 0.0,
+      "max_volume_diff": 2.9103830456733704e-11,
+      "price_tolerance": 0.05
+    },
+    "1d": {
+      "matched_bars": 30,
+      "is_reconciled": true,
+      "max_price_diff": 0.0,
+      "max_volume_diff": 0.0,
+      "price_tolerance": 0.05
+    }
+  }
+}

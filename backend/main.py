@@ -25,6 +25,7 @@ from backend.analytics.vwap import evaluate_vwap_position
 from backend.config import settings
 from backend.data.session_tracker import SessionTracker
 from backend.database import get_db_session, init_db
+from backend.decision.orchestrator import DecisionOrchestrator
 from backend.models.tables import (
     IndicatorSnapshot,
     LiveMarketState,
@@ -491,3 +492,66 @@ async def get_structure_mtf() -> dict[str, Any]:
     """Retrieve multi-timeframe alignment across 1D, 4H, 1H, 15M, and 5M."""
     mtf = await StructureEngine.compute_mtf_alignment(symbol=settings.SYMBOL)
     return mtf.to_dict()
+
+
+# -----------------------------------------------------------------------------
+# Phase 4 Engine A: Market Direction & Evidence Endpoints
+# -----------------------------------------------------------------------------
+
+
+@app.get("/api/v1/analysis/current")
+async def get_current_analysis(
+    symbol: str = Query(default=settings.SYMBOL, description="Trading instrument symbol"),
+    max_age_seconds: int = Query(default=60, ge=5, le=3600, description="Max cache age in seconds"),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """
+    Retrieve current market direction assessment and heuristic evidence scores.
+    Conforms strictly to Section 7 & 10 of PROJECT_SPECIFICATION.md:
+    - Bullish and bearish scores are independent heuristic scores (0-100), not probabilities.
+    - Gated by CME Gold market hours and data quality (> 70).
+    - Includes two-tier invalidation rules and methodology version.
+    """
+    return await DecisionOrchestrator.get_or_compute_latest_analysis(
+        session=session, symbol=symbol, max_age_seconds=max_age_seconds
+    )
+
+
+@app.get("/api/v1/analysis/timeframes")
+async def get_analysis_timeframes(
+    symbol: str = Query(default=settings.SYMBOL, description="Trading instrument symbol"),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """Retrieve multi-timeframe directional alignment breakdown across primary timeframes."""
+    analysis = await DecisionOrchestrator.get_or_compute_latest_analysis(session=session, symbol=symbol)
+    return {
+        "symbol": symbol.upper(),
+        "assessment_time": analysis["assessment_time"],
+        "overall_direction": analysis["direction"],
+        "timeframe_alignment": analysis["timeframe_alignment"],
+        "methodology_version": analysis["methodology_version"],
+    }
+
+
+@app.get("/api/v1/analysis/evidence")
+async def get_analysis_evidence(
+    symbol: str = Query(default=settings.SYMBOL, description="Trading instrument symbol"),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """Retrieve structured supporting evidence, contradicting evidence, and invalidation rules."""
+    analysis = await DecisionOrchestrator.get_or_compute_latest_analysis(session=session, symbol=symbol)
+    return {
+        "symbol": symbol.upper(),
+        "assessment_time": analysis["assessment_time"],
+        "direction": analysis["direction"],
+        "bullish_score": analysis["bullish_score"],
+        "bearish_score": analysis["bearish_score"],
+        "score_label": analysis["score_label"],
+        "breakdown": analysis["breakdown"],
+        "supporting_evidence": analysis["supporting_evidence"],
+        "contradicting_evidence": analysis["contradicting_evidence"],
+        "key_levels": analysis["key_levels"],
+        "invalidation_conditions": analysis["invalidation_conditions"],
+        "data_quality_score": analysis["data_quality_score"],
+        "methodology_version": analysis["methodology_version"],
+    }

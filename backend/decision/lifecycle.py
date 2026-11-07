@@ -1,11 +1,11 @@
 """
 Setup Lifecycle State Machine for Binance XAUUSDT.
-Strictly conforms to Section 7 and 8 of PROJECT_SPECIFICATION.md:
-- Manages setup state progression:
-  IDENTIFIED -> TRIGGERED -> TARGET_HIT / STOPPED_OUT / INVALIDATED / EXPIRED.
-- Conservative collision resolution (adverse-first touch rule when candle hits both SL and TP).
-- Immutable historical transition tracking and realized R:R calculation.
-- Methodology Version: v1.0.0
+Strictly conforms to Section 7 and 8 of PROJECT_SPECIFICATION.md and Section 16 of Forensic Audit:
+- Strict lifecycle state progression:
+    POTENTIAL -> CONFIRMED -> TRIGGERED -> TARGET_HIT / STOPPED_OUT / INVALIDATED / EXPIRED.
+- Conservative collision rule: Stop Loss WINS if both Stop Loss and Target are hit in the same candle.
+- Invalidation before entry: Stop Loss hit before entry zone fill transitions setup to INVALIDATED.
+- Expiration handling: Unfilled setups expire cleanly at expiration_time.
 """
 
 import logging
@@ -28,7 +28,7 @@ class SetupLifecycleTracker:
     ) -> TradeSetupModel:
         """
         Evaluate a single closed candle against the current setup state.
-        bar must have: high, low, open, close, and optionally open_time.
+        bar must have: high, low, open, close, and optionally open_time / close_time.
         """
         high = float(bar["high"])
         low = float(bar["low"])
@@ -45,8 +45,32 @@ class SetupLifecycleTracker:
         else:
             bar_time = datetime.now(UTC)
 
-        # 1. State: IDENTIFIED (Awaiting entry fill)
-        if setup.status == SetupStatus.IDENTIFIED:
+        # 1. State: POTENTIAL (Pending secondary confirmation)
+        if setup.status == SetupStatus.POTENTIAL:
+            # Check expiration
+            if bar_time >= setup.expiration_time:
+                setup.status = SetupStatus.EXPIRED
+                setup.closed_at = bar_time
+                setup.outcome = "EXPIRED_UNCONFIRMED"
+                return setup
+
+            # Check invalidation before confirmation
+            if setup.direction == TradeDirection.LONG and low <= setup.stop_loss:
+                setup.status = SetupStatus.INVALIDATED
+                setup.closed_at = bar_time
+                setup.outcome = "INVALIDATED_BEFORE_CONFIRMATION"
+                return setup
+            elif setup.direction == TradeDirection.SHORT and high >= setup.stop_loss:
+                setup.status = SetupStatus.INVALIDATED
+                setup.closed_at = bar_time
+                setup.outcome = "INVALIDATED_BEFORE_CONFIRMATION"
+                return setup
+
+            # If candle holds without hitting stop, promote to CONFIRMED
+            setup.status = SetupStatus.CONFIRMED
+
+        # 2. State: CONFIRMED (Awaiting entry fill)
+        if setup.status == SetupStatus.CONFIRMED:
             # Check expiration
             if bar_time >= setup.expiration_time:
                 setup.status = SetupStatus.EXPIRED
@@ -71,21 +95,21 @@ class SetupLifecycleTracker:
             if entry_hit:
                 setup.status = SetupStatus.TRIGGERED
                 setup.triggered_at = bar_time
-                # Do not immediately evaluate targets on the entry candle itself unless bar spans extrema
+                return setup
 
-        # 2. State: TRIGGERED (In active trade)
+        # 3. State: TRIGGERED (Active trade position)
         elif setup.status == SetupStatus.TRIGGERED:
             is_long = setup.direction == TradeDirection.LONG
 
-            # Check collisions: High/Low span
+            # Check Stop Loss & Target hits on current candle
             sl_hit = (low <= setup.stop_loss) if is_long else (high >= setup.stop_loss)
             tp_hit = (high >= setup.target_1) if is_long else (low <= setup.target_1)
 
-            # Conservative collision rule: If both hit on same bar, assume Stop Loss hit first
+            # MANDATORY RULE: "stop wins if stop and target hit in the same candle"
             if sl_hit and tp_hit:
                 setup.status = SetupStatus.STOPPED_OUT
                 setup.closed_at = bar_time
-                setup.outcome = "STOPPED_OUT_CONSERVATIVE_COLLISION"
+                setup.outcome = "STOPPED_OUT_SAME_CANDLE_COLLISION"
                 setup.realized_rr = -1.0
                 return setup
 
@@ -118,7 +142,6 @@ class SetupLifecycleTracker:
                 setup.status = SetupStatus.EXPIRED
                 setup.closed_at = bar_time
                 setup.outcome = "EXPIRED_IN_TRADE"
-                # Realize PnL at current close
                 entry_mid = (setup.entry_zone_min + setup.entry_zone_max) / 2.0
                 risk = abs(entry_mid - setup.stop_loss)
                 pnl = (close - entry_mid) if is_long else (entry_mid - close)

@@ -1,19 +1,23 @@
 """
 Engine B: Trade Setup Identification Engine for Binance XAUUSDT.
-Strictly conforms to Section 6, 7, and 8 of PROJECT_SPECIFICATION.md:
-- Detects 4 deterministic setup patterns:
-  1. TREND_CONTINUATION
-  2. BREAKOUT_RETEST
-  3. LIQUIDITY_SWEEP_REVERSAL
-  4. RANGE_REJECTION
-- Calculates concrete Entry Zone, Stop Loss, and 3 Take-Profit targets.
-- Enforces strict Net Risk-to-Reward ratio >= 1.5 after trading fees (0.10% taker) and slippage (0.02%).
-- Discards any setup failing R:R or data quality constraints.
-- Methodology Version: v1.0.0
+Strictly conforms to Section 6, 7, and 8 of PROJECT_SPECIFICATION.md and Section 16 of Forensic Audit:
+- 4 deterministic setup patterns:
+    1. TREND_CONTINUATION: Pullback to dynamic EMA/structure in established trend.
+    2. BREAKOUT_RETEST: Structural level breakout confirmed by close with subsequent retest rejection.
+    3. LIQUIDITY_SWEEP_REVERSAL: Reclaim of swept swing extrema with rejection confirmation.
+    4. RANGE_REJECTION: Reaction at established S/R boundaries in low-ADX range market.
+- Stop Loss strictly derived from structure + ATR buffer (structural level +/- 0.5 to 1.0 ATR).
+- Three Take-Profit targets (T1, T2, T3) using structural levels and risk multiples.
+- Conservative Friction Model:
+    * Total friction = Taker fee (0.10%) + Slippage (0.02%) + Spread (0.01%) + Funding (0.01%) = 0.14%.
+    * Net Risk = Gross Risk + Friction.
+    * Net Reward = Gross Reward - Friction.
+    * Enforces Net R:R >= 1.5. Discards any setup failing this constraint.
+- Evaluates setups strictly from completed candles (never unfinished bars).
+- Lifecycle state initialized to CONFIRMED (or POTENTIAL).
 """
 
 import logging
-import math
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -21,6 +25,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from backend.config import settings
 from backend.decision.models import (
     DirectionAssessment,
     DirectionType,
@@ -36,11 +41,6 @@ logger = logging.getLogger(__name__)
 class TradeSetupEngine:
     """Authoritative Engine B for Trade Setup Identification."""
 
-    MIN_RR_RATIO = 1.5
-    DEFAULT_TAKER_FEE_PCT = 0.0010  # 0.05% entry + 0.05% exit = 0.10%
-    DEFAULT_SLIPPAGE_PCT = 0.0002  # 0.02% slippage allowance
-    TOTAL_FRICTION_PCT = DEFAULT_TAKER_FEE_PCT + DEFAULT_SLIPPAGE_PCT
-
     @classmethod
     def identify_setups(
         cls,
@@ -48,25 +48,49 @@ class TradeSetupEngine:
         timeframe_data: dict[str, dict[str, Any]],
         symbol: str = "XAUUSDT",
         as_of_time: datetime | None = None,
+        require_completed_candles: bool = True,
     ) -> list[TradeSetupModel]:
         """
         Evaluate market condition and generate qualified trade setups.
-        Returns a list of TradeSetupModel instances meeting all R:R and structural criteria.
+        Only completed candles are evaluated.
         """
         if as_of_time is None:
             as_of_time = datetime.now(UTC)
 
-        # Do not generate setups during inactive CME sessions or when data quality is poor
-        if assessment.direction == DirectionType.NEUTRAL and assessment.data_quality_score < 70.0:
+        # Do not generate setups during inactive CME sessions or when data quality is insufficient
+        if assessment.data_quality_score < settings.DATA_QUALITY_MIN_SCORE:
+            logger.info(
+                "Data quality %.1f < %.1f: skipping setups",
+                assessment.data_quality_score,
+                settings.DATA_QUALITY_MIN_SCORE,
+            )
             return []
 
-        setups: list[TradeSetupModel] = []
+        if assessment.direction == DirectionType.NEUTRAL:
+            # Range rejections can still be evaluated in NEUTRAL range regimes if data quality is high
+            if assessment.market_regime not in ["RANGE_BOUND"]:
+                return []
 
         df_1h = timeframe_data.get("1h", {}).get("df", pd.DataFrame())
         struct_1h = timeframe_data.get("1h", {}).get("structure", {})
 
         if df_1h.empty or len(df_1h) < 10:
             return []
+
+        # Enforce completed candles check:
+        # A candle is completed if as_of_time >= candle close_time or candle open_time + timeframe_duration
+        if require_completed_candles and "close_time" in df_1h.columns:
+            last_close_time = df_1h["close_time"].iloc[-1]
+            if hasattr(last_close_time, "to_pydatetime"):
+                last_close_time = last_close_time.to_pydatetime()
+            if isinstance(last_close_time, datetime) and last_close_time.tzinfo is None:
+                last_close_time = last_close_time.replace(tzinfo=UTC)
+            if as_of_time < last_close_time:
+                # Candle is still forming; reject setup generation
+                logger.info("Current bar is incomplete (as_of_time < close_time). Setup generation withheld.")
+                return []
+
+        setups: list[TradeSetupModel] = []
 
         # 1. Pattern 1: Trend Continuation
         setup_tc = cls._detect_trend_continuation(assessment, df_1h, struct_1h, as_of_time, symbol)
@@ -124,7 +148,6 @@ class TradeSetupEngine:
             else close
         )
 
-        # Check if price is within pullback proximity of EMA 20 or EMA 50
         dist_to_ema20 = abs(close - ema_20)
         dist_to_ema50 = abs(close - ema_50)
         near_ema = min(dist_to_ema20, dist_to_ema50) <= 2.5 * atr
@@ -132,9 +155,8 @@ class TradeSetupEngine:
         if not near_ema:
             return None
 
-        # Determine levels
+        # Structure + ATR derived Stop Loss
         if trade_dir == TradeDirection.LONG:
-            # Stop loss below EMA 50 or recent swing low
             swing_low = float(df_1h["low"].tail(10).min())
             sl_candidate = swing_low - 0.5 * atr
             if not np.isnan(ema_50):
@@ -148,7 +170,6 @@ class TradeSetupEngine:
             if risk <= 0:
                 return None
 
-            # Targets
             swing_high = float(df_1h["high"].tail(20).max())
             t1 = round(max(swing_high, entry_mid + 2.0 * risk), 2)
             t2 = round(entry_mid + 3.2 * risk, 2)
@@ -174,15 +195,15 @@ class TradeSetupEngine:
             t3 = round(entry_mid - 4.5 * risk, 2)
             inval_text = f"Invalidated if price closes above 1H EMA50 / Resistance at {stop_loss:.2f}."
 
-        net_rr = cls._calculate_net_rr(entry_mid, stop_loss, t1, trade_dir)
-        if net_rr < cls.MIN_RR_RATIO:
+        net_rr, gross_rr = cls._calculate_net_and_gross_rr(entry_mid, stop_loss, t1, trade_dir)
+        if net_rr < settings.MIN_NET_RR:
             return None
 
         return TradeSetupModel(
             setup_id=uuid.uuid4(),
             symbol=symbol,
             created_at=as_of_time,
-            status=SetupStatus.IDENTIFIED,
+            status=SetupStatus.CONFIRMED,
             setup_type=SetupType.TREND_CONTINUATION,
             direction=trade_dir,
             timeframe="1h",
@@ -193,6 +214,7 @@ class TradeSetupEngine:
             target_2=t2,
             target_3=t3,
             risk_reward_ratio=net_rr,
+            gross_risk_reward_ratio=gross_rr,
             expiration_time=as_of_time + timedelta(hours=20),
             invalidation_conditions=inval_text,
             supporting_evidence=[
@@ -201,9 +223,13 @@ class TradeSetupEngine:
                     "factor": "Pullback to EMA",
                     "detail": f"Price within {min(dist_to_ema20, dist_to_ema50):.2f} USDT of dynamic EMA",
                 },
-                {"factor": "Net R:R", "detail": f"Net R:R={net_rr:.2f} exceeds minimum threshold {cls.MIN_RR_RATIO}"},
+                {"factor": "Net R:R", "detail": f"Net R:R={net_rr:.2f} >= {settings.MIN_NET_RR}"},
             ],
-            estimated_fees_pct=cls.DEFAULT_TAKER_FEE_PCT,
+            contradicting_evidence=[],
+            estimated_fees_pct=settings.TAKER_FEE_PCT,
+            estimated_slippage_pct=settings.SLIPPAGE_PCT,
+            estimated_spread_pct=settings.SPREAD_PCT,
+            estimated_funding_pct=settings.FUNDING_PCT,
         )
 
     @classmethod
@@ -225,7 +251,6 @@ class TradeSetupEngine:
             float(df_1h["atr_14"].iloc[-1]) if "atr_14" in df_1h.columns and pd.notna(df_1h["atr_14"].iloc[-1]) else 5.0
         )
 
-        # Find recent BOS within last 10 structure events
         recent_bos = [e for e in events[-10:] if "BOS" in str(e.get("event_type", ""))]
         if not recent_bos:
             return None
@@ -235,48 +260,48 @@ class TradeSetupEngine:
         bos_type = str(latest_bos.get("event_type", ""))
 
         dist_to_bos = abs(close - bos_price)
-        # Retest within 1.0 ATR of broken level
-        if dist_to_bos > 1.0 * atr:
+        if dist_to_bos > 1.2 * atr:
             return None
 
-        if "BULLISH" in bos_type and close >= bos_price - 0.25 * atr:
+        # Structure + ATR derived Stop Loss
+        if "BULLISH" in bos_type and close >= bos_price - 0.3 * atr:
             trade_dir = TradeDirection.LONG
-            stop_loss = round(bos_price - 1.0 * atr, 2)
+            stop_loss = round(bos_price - 0.75 * atr, 2)
             entry_min = round(bos_price - 0.2 * atr, 2)
             entry_max = round(bos_price + 0.3 * atr, 2)
             entry_mid = (entry_min + entry_max) / 2.0
             risk = entry_mid - stop_loss
             if risk <= 0:
                 return None
-            t1 = round(entry_mid + 1.8 * risk, 2)
-            t2 = round(entry_mid + 3.0 * risk, 2)
-            t3 = round(entry_mid + 4.5 * risk, 2)
+            t1 = round(entry_mid + 2.0 * risk, 2)
+            t2 = round(entry_mid + 3.2 * risk, 2)
+            t3 = round(entry_mid + 4.8 * risk, 2)
             inval_text = f"Invalidated if price closes below retest level at {stop_loss:.2f}."
-        elif "BEARISH" in bos_type and close <= bos_price + 0.25 * atr:
+        elif "BEARISH" in bos_type and close <= bos_price + 0.3 * atr:
             trade_dir = TradeDirection.SHORT
-            stop_loss = round(bos_price + 1.0 * atr, 2)
+            stop_loss = round(bos_price + 0.75 * atr, 2)
             entry_min = round(bos_price - 0.3 * atr, 2)
             entry_max = round(bos_price + 0.2 * atr, 2)
             entry_mid = (entry_min + entry_max) / 2.0
             risk = stop_loss - entry_mid
             if risk <= 0:
                 return None
-            t1 = round(entry_mid - 1.8 * risk, 2)
-            t2 = round(entry_mid - 3.0 * risk, 2)
-            t3 = round(entry_mid - 4.5 * risk, 2)
+            t1 = round(entry_mid - 2.0 * risk, 2)
+            t2 = round(entry_mid - 3.2 * risk, 2)
+            t3 = round(entry_mid - 4.8 * risk, 2)
             inval_text = f"Invalidated if price closes above retest level at {stop_loss:.2f}."
         else:
             return None
 
-        net_rr = cls._calculate_net_rr(entry_mid, stop_loss, t1, trade_dir)
-        if net_rr < cls.MIN_RR_RATIO:
+        net_rr, gross_rr = cls._calculate_net_and_gross_rr(entry_mid, stop_loss, t1, trade_dir)
+        if net_rr < settings.MIN_NET_RR:
             return None
 
         return TradeSetupModel(
             setup_id=uuid.uuid4(),
             symbol=symbol,
             created_at=as_of_time,
-            status=SetupStatus.IDENTIFIED,
+            status=SetupStatus.CONFIRMED,
             setup_type=SetupType.BREAKOUT_RETEST,
             direction=trade_dir,
             timeframe="1h",
@@ -287,14 +312,19 @@ class TradeSetupEngine:
             target_2=t2,
             target_3=t3,
             risk_reward_ratio=net_rr,
+            gross_risk_reward_ratio=gross_rr,
             expiration_time=as_of_time + timedelta(hours=15),
             invalidation_conditions=inval_text,
             supporting_evidence=[
                 {"factor": "BOS Confirmation", "detail": f"Recent {bos_type} broke at {bos_price:.2f}"},
-                {"factor": "Retest Level", "detail": f"Price within {dist_to_bos:.2f} USDT of broken swing level"},
-                {"factor": "Net R:R", "detail": f"Net R:R={net_rr:.2f} >= {cls.MIN_RR_RATIO}"},
+                {"factor": "Retest Level", "detail": f"Price within {dist_to_bos:.2f} USDT of broken level"},
+                {"factor": "Net R:R", "detail": f"Net R:R={net_rr:.2f} >= {settings.MIN_NET_RR}"},
             ],
-            estimated_fees_pct=cls.DEFAULT_TAKER_FEE_PCT,
+            contradicting_evidence=[],
+            estimated_fees_pct=settings.TAKER_FEE_PCT,
+            estimated_slippage_pct=settings.SLIPPAGE_PCT,
+            estimated_spread_pct=settings.SPREAD_PCT,
+            estimated_funding_pct=settings.FUNDING_PCT,
         )
 
     @classmethod
@@ -305,7 +335,7 @@ class TradeSetupEngine:
         as_of_time: datetime,
         symbol: str,
     ) -> TradeSetupModel | None:
-        """Pattern 3: Liquidity sweep reversal with divergence confirmation."""
+        """Pattern 3: Liquidity sweep reversal with reclaim confirmation."""
         sweeps = struct_1h.get("liquidity_sweeps", [])
         if not sweeps:
             return None
@@ -316,49 +346,49 @@ class TradeSetupEngine:
         )
 
         latest_sweep = sweeps[-1]
-        sweep_level = float(latest_sweep.get("sweep_level", close))
+        sweep_level = float(latest_sweep.get("swept_level", latest_sweep.get("sweep_level", close)))
         sweep_type = str(latest_sweep.get("sweep_type", "")).upper()
+        extreme_price = float(latest_sweep.get("penetration_price", latest_sweep.get("extreme_price", close)))
 
+        # Structure + ATR derived Stop Loss
         if "LOW" in sweep_type or "SUPPORT" in sweep_type or "BULLISH" in sweep_type:
             trade_dir = TradeDirection.LONG
-            extreme_low = float(latest_sweep.get("extreme_price", df_1h["low"].tail(5).min()))
-            stop_loss = round(min(extreme_low - 0.5 * atr, close - 2.0 * atr), 2)
+            stop_loss = round(extreme_price - 0.5 * atr, 2)
             entry_min = round(close - 0.25 * atr, 2)
             entry_max = round(close + 0.25 * atr, 2)
             entry_mid = close
             risk = entry_mid - stop_loss
             if risk <= 0:
                 return None
-            t1 = round(entry_mid + 2.0 * risk, 2)
+            t1 = round(entry_mid + 2.2 * risk, 2)
             t2 = round(entry_mid + 3.5 * risk, 2)
             t3 = round(entry_mid + 5.0 * risk, 2)
             inval_text = f"Invalidated if price trades below sweep low at {stop_loss:.2f}."
         elif "HIGH" in sweep_type or "RESISTANCE" in sweep_type or "BEARISH" in sweep_type:
             trade_dir = TradeDirection.SHORT
-            extreme_high = float(latest_sweep.get("extreme_price", df_1h["high"].tail(5).max()))
-            stop_loss = round(max(extreme_high + 0.5 * atr, close + 2.0 * atr), 2)
+            stop_loss = round(extreme_price + 0.5 * atr, 2)
             entry_min = round(close - 0.25 * atr, 2)
             entry_max = round(close + 0.25 * atr, 2)
             entry_mid = close
             risk = stop_loss - entry_mid
             if risk <= 0:
                 return None
-            t1 = round(entry_mid - 2.0 * risk, 2)
+            t1 = round(entry_mid - 2.2 * risk, 2)
             t2 = round(entry_mid - 3.5 * risk, 2)
             t3 = round(entry_mid - 5.0 * risk, 2)
             inval_text = f"Invalidated if price trades above sweep high at {stop_loss:.2f}."
         else:
             return None
 
-        net_rr = cls._calculate_net_rr(entry_mid, stop_loss, t1, trade_dir)
-        if net_rr < cls.MIN_RR_RATIO:
+        net_rr, gross_rr = cls._calculate_net_and_gross_rr(entry_mid, stop_loss, t1, trade_dir)
+        if net_rr < settings.MIN_NET_RR:
             return None
 
         return TradeSetupModel(
             setup_id=uuid.uuid4(),
             symbol=symbol,
             created_at=as_of_time,
-            status=SetupStatus.IDENTIFIED,
+            status=SetupStatus.CONFIRMED,
             setup_type=SetupType.LIQUIDITY_SWEEP_REVERSAL,
             direction=trade_dir,
             timeframe="1h",
@@ -369,14 +399,19 @@ class TradeSetupEngine:
             target_2=t2,
             target_3=t3,
             risk_reward_ratio=net_rr,
+            gross_risk_reward_ratio=gross_rr,
             expiration_time=as_of_time + timedelta(hours=10),
             invalidation_conditions=inval_text,
             supporting_evidence=[
                 {"factor": "Liquidity Sweep", "detail": f"Sweep of {sweep_type} at {sweep_level:.2f}"},
-                {"factor": "Sweep Reclaim", "detail": f"Price closed back inside sweep level at {close:.2f}"},
-                {"factor": "Net R:R", "detail": f"Net R:R={net_rr:.2f} >= {cls.MIN_RR_RATIO}"},
+                {"factor": "Reclaim", "detail": f"Price closed back inside sweep level at {close:.2f}"},
+                {"factor": "Net R:R", "detail": f"Net R:R={net_rr:.2f} >= {settings.MIN_NET_RR}"},
             ],
-            estimated_fees_pct=cls.DEFAULT_TAKER_FEE_PCT,
+            contradicting_evidence=[],
+            estimated_fees_pct=settings.TAKER_FEE_PCT,
+            estimated_slippage_pct=settings.SLIPPAGE_PCT,
+            estimated_spread_pct=settings.SPREAD_PCT,
+            estimated_funding_pct=settings.FUNDING_PCT,
         )
 
     @classmethod
@@ -389,10 +424,9 @@ class TradeSetupEngine:
         symbol: str,
     ) -> TradeSetupModel | None:
         """Pattern 4: Support / Resistance rejection in range-bound market."""
-        # Range setup only applies when market is not aggressively trending
         adx = float(df_1h["adx"].iloc[-1]) if "adx" in df_1h.columns and pd.notna(df_1h["adx"].iloc[-1]) else 18.0
         if adx >= 25.0:
-            return None  # Trend is too strong for range rejections
+            return None  # Trend is active, range rejection disqualified
 
         sr_zones = struct_1h.get("sr_zones", [])
         if not sr_zones:
@@ -412,40 +446,40 @@ class TradeSetupEngine:
             if z_min - 0.3 * atr <= close <= z_max + 0.3 * atr:
                 if z_type == "SUPPORT":
                     trade_dir = TradeDirection.LONG
-                    stop_loss = round(z_min - 1.0 * atr, 2)
+                    stop_loss = round(z_min - 0.75 * atr, 2)
                     entry_min = round(z_min, 2)
                     entry_max = round(close + 0.2 * atr, 2)
                     entry_mid = (entry_min + entry_max) / 2.0
                     risk = entry_mid - stop_loss
                     if risk <= 0:
                         continue
-                    t1 = round(entry_mid + 1.8 * risk, 2)
-                    t2 = round(entry_mid + 2.8 * risk, 2)
-                    t3 = round(entry_mid + 4.0 * risk, 2)
+                    t1 = round(entry_mid + 2.0 * risk, 2)
+                    t2 = round(entry_mid + 3.0 * risk, 2)
+                    t3 = round(entry_mid + 4.2 * risk, 2)
                     inval_text = f"Invalidated if price closes below support boundary at {stop_loss:.2f}."
                 elif z_type == "RESISTANCE":
                     trade_dir = TradeDirection.SHORT
-                    stop_loss = round(z_max + 1.0 * atr, 2)
+                    stop_loss = round(z_max + 0.75 * atr, 2)
                     entry_min = round(close - 0.2 * atr, 2)
                     entry_max = round(z_max, 2)
                     entry_mid = (entry_min + entry_max) / 2.0
                     risk = stop_loss - entry_mid
                     if risk <= 0:
                         continue
-                    t1 = round(entry_mid - 1.8 * risk, 2)
-                    t2 = round(entry_mid - 2.8 * risk, 2)
-                    t3 = round(entry_mid - 4.0 * risk, 2)
+                    t1 = round(entry_mid - 2.0 * risk, 2)
+                    t2 = round(entry_mid - 3.0 * risk, 2)
+                    t3 = round(entry_mid - 4.2 * risk, 2)
                     inval_text = f"Invalidated if price closes above resistance boundary at {stop_loss:.2f}."
                 else:
                     continue
 
-                net_rr = cls._calculate_net_rr(entry_mid, stop_loss, t1, trade_dir)
-                if net_rr >= cls.MIN_RR_RATIO:
+                net_rr, gross_rr = cls._calculate_net_and_gross_rr(entry_mid, stop_loss, t1, trade_dir)
+                if net_rr >= settings.MIN_NET_RR:
                     return TradeSetupModel(
                         setup_id=uuid.uuid4(),
                         symbol=symbol,
                         created_at=as_of_time,
-                        status=SetupStatus.IDENTIFIED,
+                        status=SetupStatus.CONFIRMED,
                         setup_type=SetupType.RANGE_REJECTION,
                         direction=trade_dir,
                         timeframe="1h",
@@ -456,6 +490,7 @@ class TradeSetupEngine:
                         target_2=t2,
                         target_3=t3,
                         risk_reward_ratio=net_rr,
+                        gross_risk_reward_ratio=gross_rr,
                         expiration_time=as_of_time + timedelta(hours=15),
                         invalidation_conditions=inval_text,
                         supporting_evidence=[
@@ -467,23 +502,37 @@ class TradeSetupEngine:
                                 "factor": "S/R Reaction",
                                 "detail": f"Price reacting at {z_type} ({z_min:.2f} - {z_max:.2f})",
                             },
-                            {"factor": "Net R:R", "detail": f"Net R:R={net_rr:.2f} >= {cls.MIN_RR_RATIO}"},
+                            {"factor": "Net R:R", "detail": f"Net R:R={net_rr:.2f} >= {settings.MIN_NET_RR}"},
                         ],
-                        estimated_fees_pct=cls.DEFAULT_TAKER_FEE_PCT,
+                        contradicting_evidence=[],
+                        estimated_fees_pct=settings.TAKER_FEE_PCT,
+                        estimated_slippage_pct=settings.SLIPPAGE_PCT,
+                        estimated_spread_pct=settings.SPREAD_PCT,
+                        estimated_funding_pct=settings.FUNDING_PCT,
                     )
 
         return None
 
     # -------------------------------------------------------------------------
-    # Friction & R:R Calculator
+    # Friction & Net R:R Calculator
     # -------------------------------------------------------------------------
 
     @classmethod
-    def _calculate_net_rr(cls, entry: float, stop_loss: float, target: float, direction: TradeDirection) -> float:
+    def _calculate_net_and_gross_rr(
+        cls, entry: float, stop_loss: float, target: float, direction: TradeDirection
+    ) -> tuple[float, float]:
         """
-        Calculate net Risk-to-Reward ratio after roundtrip taker fees (0.10%) and slippage (0.02%).
+        Calculate Net Risk-to-Reward ratio after:
+        - Taker fee (0.10% roundtrip)
+        - Slippage (0.02%)
+        - Spread (0.01%)
+        - Funding fee (0.01%)
+        Total friction = 0.14%.
         """
-        friction_per_unit = entry * cls.TOTAL_FRICTION_PCT
+        total_friction_pct = (
+            settings.TAKER_FEE_PCT + settings.SLIPPAGE_PCT + settings.SPREAD_PCT + settings.FUNDING_PCT
+        )
+        friction_per_unit = entry * total_friction_pct
 
         if direction == TradeDirection.LONG:
             gross_risk = entry - stop_loss
@@ -493,12 +542,15 @@ class TradeSetupEngine:
             gross_reward = entry - target
 
         if gross_risk <= 0 or gross_reward <= 0:
-            return 0.0
+            return 0.0, 0.0
+
+        gross_rr = round(gross_reward / gross_risk, 2)
 
         net_risk = gross_risk + friction_per_unit
         net_reward = gross_reward - friction_per_unit
 
         if net_risk <= 0 or net_reward <= 0:
-            return 0.0
+            return 0.0, gross_rr
 
-        return round(net_reward / net_risk, 2)
+        net_rr = round(net_reward / net_risk, 2)
+        return net_rr, gross_rr

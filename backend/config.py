@@ -51,6 +51,31 @@ class Settings(BaseSettings):
     # CME Session Day (18:00 ET to 17:00 ET) 1D aggregation alongside UTC 1D candle
     ENABLE_CME_SESSION_DAILY_CANDLES: bool = True
 
+    # Phase 4: Decision Engine Architecture (Section 7 of Spec & Section 16 of Audit)
+    DECISION_METHODOLOGY_VERSION: str = "v1.1.0-phase4"
+    DATA_QUALITY_MIN_SCORE: float = 70.0
+
+    # Engine A: Scoring Weights (Initial configurable parameters summing to 100 max pts)
+    WEIGHT_STRUCTURE: float = 25.0
+    WEIGHT_MTF_TREND: float = 20.0
+    WEIGHT_MOMENTUM: float = 15.0
+    WEIGHT_VOLUME: float = 15.0
+    WEIGHT_VOLATILITY_PA: float = 15.0
+    WEIGHT_LIQUIDITY: float = 10.0
+
+    # Correlation-Aware Caps: Prevents double-counting collinear factors
+    # Structure (25) + MTF Trend (20) max combined cap
+    MAX_STRUCTURE_TREND_COMBINED: float = 35.0
+    # Momentum (15) + Volatility/PA (15) max combined cap
+    MAX_MOMENTUM_PA_COMBINED: float = 22.0
+
+    # Engine B: Setup Qualification & Friction Model
+    MIN_NET_RR: float = 1.5
+    TAKER_FEE_PCT: float = 0.0010  # 0.05% entry + 0.05% exit = 0.10% roundtrip
+    SLIPPAGE_PCT: float = 0.0002   # 0.02% slippage allowance
+    SPREAD_PCT: float = 0.0001     # 0.01% estimated average spread
+    FUNDING_PCT: float = 0.0001    # 0.01% per-holding period estimated funding friction
+
     model_config = SettingsConfigDict(
         env_file=str(Path(__file__).parent.parent / ".env"), env_file_encoding="utf-8", extra="ignore"
     )

@@ -5,7 +5,7 @@ Strictly conforms to Section 6, 7, 8, 9, and 10 of PROJECT_SPECIFICATION.md:
 - Executes Engine A (Directional Scoring) and Engine B (Trade Setup Identification).
 - Persists outputs into PostgreSQL tables market_analysis and trade_setups.
 - Authoritative pipeline shared across live streaming and historical backtesting.
-- Methodology Version: v1.0.0
+- Methodology Version: v1.1.0-phase4
 """
 
 import logging
@@ -15,8 +15,10 @@ from typing import Any
 import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.analytics.indicator_engine import IndicatorEngine
+from backend.config import settings
 from backend.data.session_tracker import SessionTracker
 from backend.database import get_async_session
 from backend.decision.models import (
@@ -45,6 +47,7 @@ class DecisionOrchestrator:
         symbol: str = "XAUUSDT",
         as_of_time: datetime | None = None,
         is_live: bool = True,
+        require_completed_candles: bool = True,
     ) -> tuple[DirectionAssessment, list[TradeSetupModel]]:
         """
         Pure calculation pipeline:
@@ -89,6 +92,7 @@ class DecisionOrchestrator:
             timeframe_data=processed_tf_data,
             symbol=symbol,
             as_of_time=as_of_time,
+            require_completed_candles=require_completed_candles,
         )
 
         return assessment, setups
@@ -101,7 +105,7 @@ class DecisionOrchestrator:
         Query recent candles across 1D, 4H, 1H, 15M, and 5M from the database,
         execute Engine A and Engine B, and optionally persist the results.
         """
-        timeframes = ["1d", "4h", "1h", "15m", "5m"]
+        timeframes = settings.PRIMARY_TIMEFRAMES
         raw_candles: dict[str, pd.DataFrame] = {}
 
         try:
@@ -224,3 +228,88 @@ class DecisionOrchestrator:
             logger.error("Failed to persist TradeSetups: %s", exc)
 
         return persisted
+
+    @classmethod
+    async def get_or_compute_latest_analysis(
+        cls,
+        session: AsyncSession,
+        symbol: str = "XAUUSDT",
+        max_age_seconds: int = 60,
+    ) -> dict[str, Any]:
+        """
+        Fast-path: Query latest cached analysis from PostgreSQL market_analysis.
+        If cache is missing or older than max_age_seconds, compute on demand and persist.
+        """
+        stmt = (
+            select(MarketAnalysis)
+            .where(MarketAnalysis.symbol == symbol.upper())
+            .order_by(MarketAnalysis.assessment_time.desc())
+            .limit(1)
+        )
+        res = await session.execute(stmt)
+        record = res.scalar_one_or_none()
+
+        now = datetime.now(UTC)
+        if record is not None:
+            rec_time = record.assessment_time
+            if rec_time.tzinfo is None:
+                rec_time = rec_time.replace(tzinfo=UTC)
+            age = (now - rec_time).total_seconds()
+            if age <= max_age_seconds:
+                return {
+                    "symbol": record.symbol,
+                    "assessment_time": rec_time.isoformat(),
+                    "direction": record.direction,
+                    "bullish_score": float(record.bullish_score),
+                    "bearish_score": float(record.bearish_score),
+                    "score_label": "HEURISTIC_INDICATOR_SCORE",
+                    "breakdown": {
+                        "structure_score": float(record.structure_score),
+                        "mtf_trend_score": float(record.mtf_trend_score),
+                        "momentum_score": float(record.momentum_score),
+                        "volume_score": float(record.volume_score),
+                        "liquidity_score": float(record.liquidity_score),
+                        "volatility_pa_score": float(record.volatility_pa_score),
+                    },
+                    "supporting_evidence": record.supporting_evidence,
+                    "contradicting_evidence": record.contradicting_evidence,
+                    "timeframe_alignment": record.timeframe_alignment,
+                    "key_levels": record.key_levels,
+                    "invalidation_conditions": record.invalidation_conditions,
+                    "data_quality_score": float(record.data_quality_score),
+                    "methodology_version": record.methodology_version,
+                    "is_live": record.is_live,
+                    "source": "CACHE",
+                }
+
+        # Fallback path: compute live and persist
+        assessment, _ = await cls.run_current_pipeline(symbol=symbol, persist=True)
+        return {
+            "symbol": assessment.symbol,
+            "assessment_time": assessment.assessment_time.isoformat(),
+            "direction": assessment.direction.value if hasattr(assessment.direction, "value") else assessment.direction,
+            "bullish_score": assessment.bullish_score,
+            "bearish_score": assessment.bearish_score,
+            "score_label": assessment.score_label,
+            "breakdown": {
+                "structure_score": assessment.breakdown.structure_score,
+                "mtf_trend_score": assessment.breakdown.mtf_trend_score,
+                "momentum_score": assessment.breakdown.momentum_score,
+                "volume_score": assessment.breakdown.volume_score,
+                "liquidity_score": assessment.breakdown.liquidity_score,
+                "volatility_pa_score": assessment.breakdown.volatility_pa_score,
+            },
+            "supporting_evidence": assessment.supporting_evidence,
+            "contradicting_evidence": assessment.contradicting_evidence,
+            "timeframe_alignment": assessment.timeframe_alignment,
+            "key_levels": (
+                assessment.key_levels.to_dict()
+                if hasattr(assessment.key_levels, "to_dict")
+                else assessment.key_levels
+            ),
+            "invalidation_conditions": assessment.invalidation_conditions,
+            "data_quality_score": assessment.data_quality_score,
+            "methodology_version": assessment.methodology_version,
+            "is_live": assessment.is_live,
+            "source": "COMPUTED",
+        }

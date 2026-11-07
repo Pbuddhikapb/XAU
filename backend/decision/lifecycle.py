@@ -99,6 +99,10 @@ class SetupLifecycleTracker:
 
         # 3. State: TRIGGERED or TARGET_HIT with extended tracking (Active trade position)
         elif setup.status in (SetupStatus.TRIGGERED, SetupStatus.TARGET_HIT):
+            # If ultimate target (T3) was already reached, trade is completely resolved
+            if setup.outcome == "TARGET_3_HIT":
+                return setup
+
             is_long = setup.direction == TradeDirection.LONG
             effective_sl = (
                 setup.active_stop_loss

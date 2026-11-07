@@ -151,8 +151,8 @@ class DecisionOrchestrator:
 
         if persist:
             await cls.persist_assessment(assessment)
+            await cls.auto_invalidate_active_opposing_setups(symbol, assessment.direction)
             if setups and isinstance(setups, list):
-                await cls.auto_invalidate_active_opposing_setups(symbol, assessment.direction)
                 await cls.persist_setups(setups)
 
         return assessment, setups
@@ -376,15 +376,19 @@ class DecisionOrchestrator:
         If no setup qualifies, returns an explicit NO_SETUP response dict with reason.
         """
         active_statuses = ["POTENTIAL", "CONFIRMED", "TRIGGERED"]
+        now = datetime.now(UTC)
         stmt = (
             select(TradeSetup)
-            .where(TradeSetup.symbol == symbol.upper(), TradeSetup.status.in_(active_statuses))
+            .where(
+                TradeSetup.symbol == symbol.upper(),
+                TradeSetup.status.in_(active_statuses),
+                TradeSetup.expiration_time > now,
+            )
             .order_by(TradeSetup.created_at.desc())
         )
         res = await session.execute(stmt)
         records = res.scalars().all()
 
-        now = datetime.now(UTC)
         if records:
             latest_time = records[0].created_at
             if latest_time.tzinfo is None:

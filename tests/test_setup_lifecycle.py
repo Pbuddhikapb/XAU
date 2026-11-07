@@ -239,3 +239,27 @@ def test_auto_invalidate_opposing():
 
     assert long1.status == SetupStatus.CONFIRMED
 
+
+def test_target_3_hit_is_terminal():
+    """Verify once Target 3 is reached, subsequent bars cannot stop out or alter the setup."""
+    setup = create_sample_setup(status=SetupStatus.TARGET_HIT)
+    setup.outcome = "TARGET_3_HIT"
+    setup.realized_rr = 4.37
+    setup.breakeven_locked = True
+    setup.active_stop_loss = 2702.5
+
+    # Adverse candle dropping deep below breakeven stop
+    adverse_bar = {
+        "open": 2690.0,
+        "high": 2695.0,
+        "low": 2650.0,  # Far below stop
+        "close": 2660.0,
+        "open_time": datetime(2026, 10, 25, 16, 0, tzinfo=UTC),
+    }
+
+    res = SetupLifecycleTracker.evaluate_bar(setup, adverse_bar)
+    assert res.status == SetupStatus.TARGET_HIT
+    assert res.outcome == "TARGET_3_HIT"
+    assert res.realized_rr == 4.37
+
+

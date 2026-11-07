@@ -4,6 +4,7 @@ Provides versioned REST endpoints as mandated by Section 10 of PROJECT_SPECIFICA
 """
 
 import logging
+import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
@@ -22,6 +23,9 @@ from backend.analytics.trend import evaluate_trend_direction_and_strength
 from backend.analytics.volatility import evaluate_volatility_regime
 from backend.analytics.volume import evaluate_volume_profile
 from backend.analytics.vwap import evaluate_vwap_position
+from backend.backtest.models import BacktestRunRequest
+from backend.backtest.persistence import BacktestPersistence
+from backend.backtest.runner import BacktestRunner
 from backend.config import settings
 from backend.data.session_tracker import SessionTracker
 from backend.database import get_db_session, init_db
@@ -598,4 +602,52 @@ async def get_setups_history(
         status=status,
         limit=limit,
     )
+
+
+# -----------------------------------------------------------------------------
+# Phase 5: Backtesting & Historical Validation Endpoints
+# -----------------------------------------------------------------------------
+
+
+@app.get("/api/v1/backtests")
+async def get_backtests_list(
+    symbol: str = Query(default=settings.SYMBOL, description="Trading instrument symbol"),
+    limit: int = Query(default=50, ge=1, le=500, description="Max runs to return"),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[dict[str, Any]]:
+    """List historical backtest runs with summary performance metrics."""
+    return await BacktestPersistence.get_backtest_runs(session=session, symbol=symbol, limit=limit)
+
+
+@app.get("/api/v1/backtests/{run_id}")
+async def get_backtest_detail(
+    run_id: uuid.UUID,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """Retrieve detailed backtest metrics, trade logs, and walk-forward degradation."""
+    detail = await BacktestPersistence.get_backtest_run_detail(session=session, run_id=run_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail=f"Backtest run {run_id} not found")
+    return detail
+
+
+@app.post("/api/v1/backtests/run")
+async def execute_backtest(
+    request: BacktestRunRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """Trigger a backtest simulation and persist results into PostgreSQL."""
+    return await BacktestRunner.execute_and_persist(request=request, session=session)
+
+
+@app.get("/api/v1/signals/history")
+async def get_signals_history(
+    horizon: int | None = Query(default=None, description="Horizon in candles: 5, 10, 20, or 50"),
+    outcome: str | None = Query(default=None, description="Outcome filter: FAVORABLE_FIRST, ADVERSE_FIRST, etc."),
+    limit: int = Query(default=100, ge=1, le=1000, description="Max records to return"),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[dict[str, Any]]:
+    """Retrieve historical horizon signal outcomes and MFE/MAE excursions."""
+    return await BacktestPersistence.get_signals_history(session=session, horizon=horizon, outcome=outcome, limit=limit)
+
 

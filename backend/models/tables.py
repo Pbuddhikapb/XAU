@@ -263,7 +263,7 @@ class SignalOutcome(Base):
     __tablename__ = "signal_outcomes"
 
     id = Column(BIGINT, primary_key=True, autoincrement=True)
-    setup_id = Column(UUID(as_uuid=True), ForeignKey("trade_setups.setup_id"), nullable=False)
+    setup_id = Column(UUID(as_uuid=True), ForeignKey("trade_setups.setup_id"), nullable=True)
     evaluated_at = Column(DateTime(timezone=True), nullable=False)
     horizon_candles = Column(INT, nullable=False)  # 5, 10, 20, 50
     outcome = Column(VARCHAR(20), nullable=False)  # TARGET_HIT, STOPPED_OUT, EXPIRED, FAVORABLE_FIRST, ADVERSE_FIRST

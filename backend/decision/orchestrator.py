@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +24,7 @@ from backend.database import get_async_session
 from backend.decision.models import (
     DirectionAssessment,
     DirectionType,
+    NoSetupResponse,
     SetupStatus,
     SetupType,
     TradeDirection,
@@ -48,7 +49,7 @@ class DecisionOrchestrator:
         as_of_time: datetime | None = None,
         is_live: bool = True,
         require_completed_candles: bool = True,
-    ) -> tuple[DirectionAssessment, list[TradeSetupModel]]:
+    ) -> tuple[DirectionAssessment, list[TradeSetupModel] | NoSetupResponse]:
         """
         Pure calculation pipeline:
         Takes a dict of raw OHLCV DataFrames for each timeframe,
@@ -100,7 +101,7 @@ class DecisionOrchestrator:
     @classmethod
     async def run_current_pipeline(
         cls, symbol: str = "XAUUSDT", persist: bool = True
-    ) -> tuple[DirectionAssessment, list[TradeSetupModel]]:
+    ) -> tuple[DirectionAssessment, list[TradeSetupModel] | NoSetupResponse]:
         """
         Query recent candles across 1D, 4H, 1H, 15M, and 5M from the database,
         execute Engine A and Engine B, and optionally persist the results.
@@ -150,7 +151,8 @@ class DecisionOrchestrator:
 
         if persist:
             await cls.persist_assessment(assessment)
-            if setups:
+            if setups and isinstance(setups, list):
+                await cls.auto_invalidate_active_opposing_setups(symbol, assessment.direction)
                 await cls.persist_setups(setups)
 
         return assessment, setups
@@ -220,6 +222,8 @@ class DecisionOrchestrator:
                         supporting_evidence=s.supporting_evidence,
                         estimated_fees_pct=s.estimated_fees_pct,
                         methodology_version=s.methodology_version,
+                        active_stop_loss=s.active_stop_loss,
+                        breakeven_locked=s.breakeven_locked,
                     )
                     session.add(record)
                     persisted += 1
@@ -313,3 +317,209 @@ class DecisionOrchestrator:
             "is_live": assessment.is_live,
             "source": "COMPUTED",
         }
+
+    @classmethod
+    async def auto_invalidate_active_opposing_setups(
+        cls,
+        symbol: str,
+        current_direction: DirectionType | str,
+        session: AsyncSession | None = None,
+    ) -> int:
+        """
+        Invalidate active setups in PostgreSQL whose direction opposes current Engine A bias.
+        """
+        dir_str = current_direction.value if isinstance(current_direction, DirectionType) else str(current_direction)
+        if dir_str in ("BULLISH", "POTENTIAL_BULLISH"):
+            opposing = "SHORT"
+        elif dir_str in ("BEARISH", "POTENTIAL_BEARISH"):
+            opposing = "LONG"
+        else:
+            return 0
+
+        async def _do_inval(s: AsyncSession) -> int:
+            stmt = (
+                update(TradeSetup)
+                .where(
+                    TradeSetup.symbol == symbol.upper(),
+                    TradeSetup.direction == opposing,
+                    TradeSetup.status.in_(["POTENTIAL", "CONFIRMED", "TRIGGERED"]),
+                )
+                .values(
+                    status="INVALIDATED",
+                    invalidation_conditions=TradeSetup.invalidation_conditions + " [Auto-invalidated by bias flip]",
+                )
+            )
+            res = await s.execute(stmt)
+            await s.commit()
+            return int(res.rowcount)
+
+        try:
+            if session:
+                return await _do_inval(session)
+            async with get_async_session() as s:
+                return await _do_inval(s)
+        except SQLAlchemyError as exc:
+            logger.error("Failed to auto-invalidate opposing setups: %s", exc)
+            return 0
+
+    @classmethod
+    async def get_or_compute_current_setups(
+        cls,
+        session: AsyncSession,
+        symbol: str = "XAUUSDT",
+        max_age_minutes: int = 5,
+    ) -> dict[str, Any]:
+        """
+        Fast-path: Query active setups (POTENTIAL, CONFIRMED, TRIGGERED) from PostgreSQL.
+        If fresh active setups exist within max_age_minutes, return them.
+        Slow-path: If stale or no active setups found, execute the pipeline to compute latest.
+        If no setup qualifies, returns an explicit NO_SETUP response dict with reason.
+        """
+        active_statuses = ["POTENTIAL", "CONFIRMED", "TRIGGERED"]
+        stmt = (
+            select(TradeSetup)
+            .where(TradeSetup.symbol == symbol.upper(), TradeSetup.status.in_(active_statuses))
+            .order_by(TradeSetup.created_at.desc())
+        )
+        res = await session.execute(stmt)
+        records = res.scalars().all()
+
+        now = datetime.now(UTC)
+        if records:
+            latest_time = records[0].created_at
+            if latest_time.tzinfo is None:
+                latest_time = latest_time.replace(tzinfo=UTC)
+            age_min = (now - latest_time).total_seconds() / 60.0
+            if age_min <= max_age_minutes:
+                setups_data = [
+                    {
+                        "setup_id": str(r.setup_id),
+                        "symbol": r.symbol,
+                        "created_at": r.created_at.isoformat(),
+                        "status": r.status,
+                        "setup_type": r.setup_type,
+                        "direction": r.direction,
+                        "timeframe": r.timeframe,
+                        "entry_zone_min": float(r.entry_zone_min),
+                        "entry_zone_max": float(r.entry_zone_max),
+                        "stop_loss": float(r.stop_loss),
+                        "target_1": float(r.target_1),
+                        "target_2": float(r.target_2) if r.target_2 is not None else None,
+                        "target_3": float(r.target_3) if r.target_3 is not None else None,
+                        "risk_reward_ratio": float(r.risk_reward_ratio),
+                        "expiration_time": r.expiration_time.isoformat(),
+                        "invalidation_conditions": r.invalidation_conditions,
+                        "supporting_evidence": r.supporting_evidence,
+                        "estimated_fees_pct": float(r.estimated_fees_pct),
+                        "methodology_version": r.methodology_version,
+                        "active_stop_loss": float(r.active_stop_loss) if r.active_stop_loss is not None else None,
+                        "breakeven_locked": bool(r.breakeven_locked),
+                    }
+                    for r in records
+                ]
+                return {
+                    "symbol": symbol.upper(),
+                    "has_active_setup": True,
+                    "no_setup": False,
+                    "count": len(setups_data),
+                    "setups": setups_data,
+                    "source": "CACHE",
+                }
+
+        # Fallback path: execute live pipeline and persist
+        assessment, setups = await cls.run_current_pipeline(symbol=symbol, persist=True)
+        if isinstance(setups, NoSetupResponse):
+            return {
+                "symbol": symbol.upper(),
+                "has_active_setup": False,
+                "no_setup": True,
+                "reason": setups.reason,
+                "direction": setups.direction,
+                "data_quality_score": setups.data_quality_score,
+                "market_regime": setups.market_regime,
+                "assessment_time": setups.assessment_time.isoformat(),
+                "methodology_version": setups.methodology_version,
+                "setups": [],
+                "source": "COMPUTED",
+            }
+
+        if setups:
+            return {
+                "symbol": symbol.upper(),
+                "has_active_setup": True,
+                "no_setup": False,
+                "count": len(setups),
+                "setups": [s.to_dict() for s in setups],
+                "source": "COMPUTED",
+            }
+
+        return {
+            "symbol": symbol.upper(),
+            "has_active_setup": False,
+            "no_setup": True,
+            "reason": "NO_PATTERN_QUALIFIED",
+            "direction": (
+                assessment.direction.value
+                if hasattr(assessment.direction, "value")
+                else str(assessment.direction)
+            ),
+            "data_quality_score": float(assessment.data_quality_score),
+            "market_regime": str(assessment.market_regime),
+            "assessment_time": assessment.assessment_time.isoformat(),
+            "methodology_version": assessment.methodology_version,
+            "setups": [],
+            "source": "COMPUTED",
+        }
+
+    @classmethod
+    async def get_setups_history(
+        cls,
+        session: AsyncSession,
+        symbol: str = "XAUUSDT",
+        direction: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+        since: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Query historical trade setups with optional filtering.
+        """
+        stmt = select(TradeSetup).where(TradeSetup.symbol == symbol.upper())
+
+        if direction is not None:
+            stmt = stmt.where(TradeSetup.direction == direction.upper())
+        if status is not None:
+            stmt = stmt.where(TradeSetup.status == status.upper())
+        if since is not None:
+            stmt = stmt.where(TradeSetup.created_at >= since)
+
+        stmt = stmt.order_by(TradeSetup.created_at.desc()).limit(limit)
+        res = await session.execute(stmt)
+        records = res.scalars().all()
+
+        return [
+            {
+                "setup_id": str(r.setup_id),
+                "symbol": r.symbol,
+                "created_at": r.created_at.isoformat(),
+                "status": r.status,
+                "setup_type": r.setup_type,
+                "direction": r.direction,
+                "timeframe": r.timeframe,
+                "entry_zone_min": float(r.entry_zone_min),
+                "entry_zone_max": float(r.entry_zone_max),
+                "stop_loss": float(r.stop_loss),
+                "target_1": float(r.target_1),
+                "target_2": float(r.target_2) if r.target_2 is not None else None,
+                "target_3": float(r.target_3) if r.target_3 is not None else None,
+                "risk_reward_ratio": float(r.risk_reward_ratio),
+                "expiration_time": r.expiration_time.isoformat(),
+                "invalidation_conditions": r.invalidation_conditions,
+                "supporting_evidence": r.supporting_evidence,
+                "estimated_fees_pct": float(r.estimated_fees_pct),
+                "methodology_version": r.methodology_version,
+                "active_stop_loss": float(r.active_stop_loss) if r.active_stop_loss is not None else None,
+                "breakeven_locked": bool(r.breakeven_locked),
+            }
+            for r in records
+        ]

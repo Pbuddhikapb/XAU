@@ -555,3 +555,47 @@ async def get_analysis_evidence(
         "data_quality_score": analysis["data_quality_score"],
         "methodology_version": analysis["methodology_version"],
     }
+
+
+# -----------------------------------------------------------------------------
+# Phase 4 Engine B: Trade Setup Identification & Lifecycle Endpoints
+# -----------------------------------------------------------------------------
+
+
+@app.get("/api/v1/setups/current")
+async def get_current_setups(
+    symbol: str = Query(default=settings.SYMBOL, description="Trading instrument symbol"),
+    max_age_minutes: int = Query(default=5, ge=1, le=60, description="Max cache age in minutes"),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """
+    Retrieve active trade setups (POTENTIAL, CONFIRMED, TRIGGERED).
+    If no setups qualify, returns an explicit NO_SETUP response payload explaining why.
+    """
+    return await DecisionOrchestrator.get_or_compute_current_setups(
+        session=session, symbol=symbol, max_age_minutes=max_age_minutes
+    )
+
+
+@app.get("/api/v1/setups/history")
+async def get_setups_history(
+    symbol: str = Query(default=settings.SYMBOL, description="Trading instrument symbol"),
+    direction: str | None = Query(default=None, description="Filter by direction: LONG or SHORT"),
+    status: str | None = Query(
+        default=None,
+        description="Filter by status (POTENTIAL, CONFIRMED, TRIGGERED, TARGET_HIT, STOPPED_OUT, INVALIDATED, EXPIRED)",
+    ),
+    limit: int = Query(default=50, ge=1, le=500, description="Max number of historical setups to return"),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[dict[str, Any]]:
+    """
+    Retrieve historical trade setups with optional filtering by direction and status.
+    """
+    return await DecisionOrchestrator.get_setups_history(
+        session=session,
+        symbol=symbol,
+        direction=direction,
+        status=status,
+        limit=limit,
+    )
+

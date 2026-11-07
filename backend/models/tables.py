@@ -251,6 +251,8 @@ class TradeSetup(Base):
     supporting_evidence = Column(JSONB, nullable=False)
     estimated_fees_pct = Column(NUMERIC(6, 4), nullable=False)
     methodology_version = Column(VARCHAR(20), nullable=False)
+    active_stop_loss = Column(NUMERIC(18, 4), nullable=True)
+    breakeven_locked = Column(BOOLEAN, nullable=False, default=False, server_default="false")
 
     __table_args__ = (Index("idx_setups_time", "symbol", "created_at"),)
 

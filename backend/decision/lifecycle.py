@@ -14,7 +14,7 @@ from typing import Any
 
 import pandas as pd
 
-from backend.decision.models import SetupStatus, TradeDirection, TradeSetupModel
+from backend.decision.models import DirectionType, SetupStatus, TradeDirection, TradeSetupModel
 
 logger = logging.getLogger(__name__)
 
@@ -97,33 +97,75 @@ class SetupLifecycleTracker:
                 setup.triggered_at = bar_time
                 return setup
 
-        # 3. State: TRIGGERED (Active trade position)
-        elif setup.status == SetupStatus.TRIGGERED:
+        # 3. State: TRIGGERED or TARGET_HIT with extended tracking (Active trade position)
+        elif setup.status in (SetupStatus.TRIGGERED, SetupStatus.TARGET_HIT):
             is_long = setup.direction == TradeDirection.LONG
+            effective_sl = (
+                setup.active_stop_loss
+                if setup.breakeven_locked and setup.active_stop_loss is not None
+                else setup.stop_loss
+            )
 
             # Check Stop Loss & Target hits on current candle
-            sl_hit = (low <= setup.stop_loss) if is_long else (high >= setup.stop_loss)
-            tp_hit = (high >= setup.target_1) if is_long else (low <= setup.target_1)
+            sl_hit = (low <= effective_sl) if is_long else (high >= effective_sl)
+
+            # Targets to check
+            if setup.status == SetupStatus.TRIGGERED:
+                tp_hit = (high >= setup.target_1) if is_long else (low <= setup.target_1)
+            elif setup.outcome == "TARGET_1_HIT":
+                tp_hit = (
+                    (high >= setup.target_2)
+                    if setup.target_2 and is_long
+                    else (low <= setup.target_2)
+                    if setup.target_2
+                    else False
+                )
+            elif setup.outcome == "TARGET_2_HIT":
+                tp_hit = (
+                    (high >= setup.target_3)
+                    if setup.target_3 and is_long
+                    else (low <= setup.target_3)
+                    if setup.target_3
+                    else False
+                )
+            else:
+                tp_hit = False
 
             # MANDATORY RULE: "stop wins if stop and target hit in the same candle"
             if sl_hit and tp_hit:
                 setup.status = SetupStatus.STOPPED_OUT
                 setup.closed_at = bar_time
-                setup.outcome = "STOPPED_OUT_SAME_CANDLE_COLLISION"
-                setup.realized_rr = -1.0
+                if setup.breakeven_locked:
+                    setup.outcome = "STOPPED_OUT_BREAKEVEN_SAME_CANDLE_COLLISION"
+                    setup.realized_rr = 0.0
+                else:
+                    setup.outcome = "STOPPED_OUT_SAME_CANDLE_COLLISION"
+                    setup.realized_rr = -1.0
                 return setup
 
             if sl_hit:
                 setup.status = SetupStatus.STOPPED_OUT
                 setup.closed_at = bar_time
-                setup.outcome = "STOPPED_OUT"
-                setup.realized_rr = -1.0
+                if setup.breakeven_locked:
+                    setup.outcome = "STOPPED_OUT_BREAKEVEN"
+                    setup.realized_rr = 0.0
+                else:
+                    setup.outcome = "STOPPED_OUT"
+                    setup.realized_rr = -1.0
                 return setup
 
             if tp_hit:
                 setup.status = SetupStatus.TARGET_HIT
                 setup.closed_at = bar_time
-                # Check higher targets
+
+                # First time hitting target_1: lock breakeven stop
+                if not setup.breakeven_locked:
+                    setup.t1_hit_at = bar_time
+                    setup.breakeven_locked = True
+                    entry_mid = (setup.entry_zone_min + setup.entry_zone_max) / 2.0
+                    setup.active_stop_loss = round(entry_mid, 2)
+
+                # Check highest target hit on this candle
                 if setup.target_3 and ((is_long and high >= setup.target_3) or (not is_long and low <= setup.target_3)):
                     setup.outcome = "TARGET_3_HIT"
                     setup.realized_rr = round(setup.risk_reward_ratio * 2.5, 2)
@@ -149,3 +191,34 @@ class SetupLifecycleTracker:
                 return setup
 
         return setup
+
+    @classmethod
+    def auto_invalidate_opposing(
+        cls,
+        setups: list[TradeSetupModel],
+        current_direction: DirectionType | str,
+    ) -> list[TradeSetupModel]:
+        """
+        When Engine A direction flips, invalidate all active opposing setups.
+        Active = POTENTIAL | CONFIRMED | TRIGGERED.
+        BULLISH/POTENTIAL_BULLISH engine direction -> invalidate SHORT setups.
+        BEARISH/POTENTIAL_BEARISH engine direction -> invalidate LONG setups.
+        """
+        active_statuses = {SetupStatus.POTENTIAL, SetupStatus.CONFIRMED, SetupStatus.TRIGGERED}
+        now = datetime.now(UTC)
+
+        dir_str = current_direction.value if isinstance(current_direction, DirectionType) else str(current_direction)
+        if dir_str in ("BULLISH", "POTENTIAL_BULLISH"):
+            opposing = TradeDirection.SHORT
+        elif dir_str in ("BEARISH", "POTENTIAL_BEARISH"):
+            opposing = TradeDirection.LONG
+        else:
+            return setups
+
+        for s in setups:
+            if s.direction == opposing and s.status in active_statuses:
+                s.status = SetupStatus.INVALIDATED
+                s.closed_at = now
+                s.outcome = "INVALIDATED_BIAS_FLIP"
+
+        return setups

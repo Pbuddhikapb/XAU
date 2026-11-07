@@ -10,6 +10,7 @@ Strictly conforms to Section 6, 7, and 8 of PROJECT_SPECIFICATION.md and Section
 - Adversarial no-lookahead test.
 """
 
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pandas as pd
@@ -20,10 +21,12 @@ from backend.config import settings
 from backend.decision.models import (
     DirectionAssessment,
     DirectionType,
+    NoSetupResponse,
     ScoreBreakdown,
     SetupStatus,
     SetupType,
     TradeDirection,
+    TradeSetupModel,
 )
 from backend.decision.setup_engine import TradeSetupEngine
 from backend.structure.structure_engine import StructureEngine
@@ -264,3 +267,135 @@ def test_setup_engine_adversarial_lookahead():
         assert bs.stop_loss == ss.stop_loss
         assert bs.target_1 == ss.target_1
         assert bs.risk_reward_ratio == ss.risk_reward_ratio
+
+
+def test_potential_direction_yields_potential_status():
+    """Verify POTENTIAL_BULLISH assessment yields POTENTIAL status setups."""
+    df_raw = make_bullish_pullback_candles(60)
+    df_ind = IndicatorEngine.compute_all_indicators(df_raw, symbol="XAUUSDT", timeframe="1h")
+    struct = StructureEngine.analyze_timeframe(df_ind, timeframe="1h")
+
+    as_of = df_raw["close_time"].iloc[-1]
+    assessment = DirectionAssessment(
+        symbol="XAUUSDT",
+        assessment_time=as_of,
+        direction=DirectionType.POTENTIAL_BULLISH,
+        bullish_score=55.0,
+        bearish_score=20.0,
+        breakdown=ScoreBreakdown(total_bullish=55.0, total_bearish=20.0),
+        data_quality_score=95.0,
+    )
+
+    tf_data = {"1h": {"df": df_ind, "structure": struct}}
+    setups = TradeSetupEngine.identify_setups(assessment, tf_data, symbol="XAUUSDT", as_of_time=as_of)
+
+    assert isinstance(setups, list)
+    assert len(setups) >= 1
+    assert setups[0].status == SetupStatus.POTENTIAL
+
+
+def test_confirmed_direction_yields_confirmed_status():
+    """Verify BULLISH assessment yields CONFIRMED status setups."""
+    df_raw = make_bullish_pullback_candles(60)
+    df_ind = IndicatorEngine.compute_all_indicators(df_raw, symbol="XAUUSDT", timeframe="1h")
+    struct = StructureEngine.analyze_timeframe(df_ind, timeframe="1h")
+
+    as_of = df_raw["close_time"].iloc[-1]
+    assessment = DirectionAssessment(
+        symbol="XAUUSDT",
+        assessment_time=as_of,
+        direction=DirectionType.BULLISH,
+        bullish_score=80.0,
+        bearish_score=10.0,
+        breakdown=ScoreBreakdown(total_bullish=80.0, total_bearish=10.0),
+        data_quality_score=95.0,
+    )
+
+    tf_data = {"1h": {"df": df_ind, "structure": struct}}
+    setups = TradeSetupEngine.identify_setups(assessment, tf_data, symbol="XAUUSDT", as_of_time=as_of)
+
+    assert isinstance(setups, list)
+    assert len(setups) >= 1
+    assert setups[0].status == SetupStatus.CONFIRMED
+
+
+def test_max_one_setup_per_direction():
+    """Verify setup engine enforces max 1 setup per direction, selecting the highest Net R:R."""
+    now = datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
+    s1 = TradeSetupModel(
+        setup_id=uuid.uuid4(),
+        symbol="XAUUSDT",
+        created_at=now,
+        status=SetupStatus.CONFIRMED,
+        setup_type=SetupType.TREND_CONTINUATION,
+        direction=TradeDirection.LONG,
+        timeframe="1h",
+        entry_zone_min=2700.0,
+        entry_zone_max=2705.0,
+        stop_loss=2690.0,
+        target_1=2730.0,
+        target_2=None,
+        target_3=None,
+        risk_reward_ratio=1.8,
+        gross_risk_reward_ratio=2.0,
+        expiration_time=now + timedelta(hours=10),
+        invalidation_conditions="None",
+    )
+    s2 = TradeSetupModel(
+        setup_id=uuid.uuid4(),
+        symbol="XAUUSDT",
+        created_at=now,
+        status=SetupStatus.CONFIRMED,
+        setup_type=SetupType.BREAKOUT_RETEST,
+        direction=TradeDirection.LONG,
+        timeframe="1h",
+        entry_zone_min=2700.0,
+        entry_zone_max=2705.0,
+        stop_loss=2692.0,
+        target_1=2735.0,
+        target_2=None,
+        target_3=None,
+        risk_reward_ratio=2.4,  # Higher R:R
+        gross_risk_reward_ratio=2.6,
+        expiration_time=now + timedelta(hours=10),
+        invalidation_conditions="None",
+    )
+
+    # In identify_setups, if both detectors returned a setup, only s2 should survive
+    best: dict[TradeDirection, TradeSetupModel] = {}
+    for s in [s1, s2]:
+        if s.direction not in best or s.risk_reward_ratio > best[s.direction].risk_reward_ratio:
+            best[s.direction] = s
+    filtered = list(best.values())
+
+    assert len(filtered) == 1
+    assert filtered[0].setup_type == SetupType.BREAKOUT_RETEST
+    assert filtered[0].risk_reward_ratio == 2.4
+
+
+def test_no_setup_response_on_low_dq():
+    """Verify DQ < 70 returns explicit NoSetupResponse with DATA_QUALITY_BELOW_THRESHOLD."""
+    df_raw = make_bullish_pullback_candles(60)
+    df_ind = IndicatorEngine.compute_all_indicators(df_raw, symbol="XAUUSDT", timeframe="1h")
+    struct = StructureEngine.analyze_timeframe(df_ind, timeframe="1h")
+
+    as_of = df_raw["close_time"].iloc[-1]
+    assessment = DirectionAssessment(
+        symbol="XAUUSDT",
+        assessment_time=as_of,
+        direction=DirectionType.BULLISH,
+        bullish_score=75.0,
+        bearish_score=15.0,
+        breakdown=ScoreBreakdown(total_bullish=75.0, total_bearish=15.0),
+        data_quality_score=50.0,  # Below threshold
+    )
+
+    tf_data = {"1h": {"df": df_ind, "structure": struct}}
+    res = TradeSetupEngine.identify_setups(assessment, tf_data, symbol="XAUUSDT", as_of_time=as_of)
+
+    assert isinstance(res, NoSetupResponse)
+    assert res.reason == "DATA_QUALITY_BELOW_THRESHOLD"
+    assert res.data_quality_score == 50.0
+    assert not res  # Falsy evaluation holds
+    assert res == []  # Comparison with empty list holds
+

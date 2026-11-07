@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 
 from backend.decision.lifecycle import SetupLifecycleTracker
 from backend.decision.models import (
+    DirectionType,
     SetupStatus,
     SetupType,
     TradeDirection,
@@ -169,3 +170,72 @@ def test_lifecycle_expired_without_fill():
     res = SetupLifecycleTracker.evaluate_bar(setup, bar)
     assert res.status == SetupStatus.EXPIRED
     assert res.outcome == "EXPIRED_WITHOUT_FILL"
+
+
+def test_t1_hit_locks_breakeven_stop():
+    """Verify touching target_1 locks breakeven stop at entry midpoint with risk=0."""
+    setup = create_sample_setup(status=SetupStatus.TRIGGERED)
+    setup.triggered_at = datetime(2026, 10, 25, 13, 0, tzinfo=UTC)
+
+    bar = {
+        "open": 2720.0,
+        "high": 2740.0,  # Touches target_1 (2735.0)
+        "low": 2715.0,
+        "close": 2738.0,
+        "open_time": datetime(2026, 10, 25, 14, 0, tzinfo=UTC),
+    }
+
+    res = SetupLifecycleTracker.evaluate_bar(setup, bar)
+    assert res.status == SetupStatus.TARGET_HIT
+    assert res.breakeven_locked is True
+    assert res.active_stop_loss == 2702.5  # Midpoint of [2700, 2705]
+    assert res.t1_hit_at is not None
+    assert res.outcome == "TARGET_1_HIT"
+
+
+def test_sl_at_breakeven_used_after_t1():
+    """Verify after T1 hit, pullback to breakeven active stop exits trade at risk=0."""
+    setup = create_sample_setup(status=SetupStatus.TARGET_HIT)
+    setup.triggered_at = datetime(2026, 10, 25, 13, 0, tzinfo=UTC)
+    setup.breakeven_locked = True
+    setup.active_stop_loss = 2702.5
+    setup.outcome = "TARGET_1_HIT"
+
+    # Next candle drops to 2701.0 (above original SL 2685, but below active breakeven 2702.5)
+    bar = {
+        "open": 2720.0,
+        "high": 2725.0,
+        "low": 2701.0,  # Below 2702.5 breakeven
+        "close": 2703.0,
+        "open_time": datetime(2026, 10, 25, 15, 0, tzinfo=UTC),
+    }
+
+    res = SetupLifecycleTracker.evaluate_bar(setup, bar)
+    assert res.status == SetupStatus.STOPPED_OUT
+    assert res.outcome == "STOPPED_OUT_BREAKEVEN"
+    assert res.realized_rr == 0.0
+
+
+def test_auto_invalidate_opposing():
+    """Verify engine direction flip auto-invalidates opposing active setups."""
+    short1 = create_sample_setup(status=SetupStatus.CONFIRMED)
+    short1.direction = TradeDirection.SHORT
+
+    short2 = create_sample_setup(status=SetupStatus.TRIGGERED)
+    short2.direction = TradeDirection.SHORT
+
+    long1 = create_sample_setup(status=SetupStatus.CONFIRMED)
+    long1.direction = TradeDirection.LONG
+
+    setups = [short1, short2, long1]
+    res = SetupLifecycleTracker.auto_invalidate_opposing(setups, DirectionType.BULLISH)
+
+    assert len(res) == 3
+    assert short1.status == SetupStatus.INVALIDATED
+    assert short1.outcome == "INVALIDATED_BIAS_FLIP"
+
+    assert short2.status == SetupStatus.INVALIDATED
+    assert short2.outcome == "INVALIDATED_BIAS_FLIP"
+
+    assert long1.status == SetupStatus.CONFIRMED
+

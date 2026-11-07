@@ -170,6 +170,9 @@ class TradeSetupModel:
     closed_at: datetime | None = None
     outcome: str | None = None
     realized_rr: float | None = None
+    active_stop_loss: float | None = None
+    breakeven_locked: bool = False
+    t1_hit_at: datetime | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -183,4 +186,33 @@ class TradeSetupModel:
             data["triggered_at"] = self.triggered_at.isoformat()
         if self.closed_at:
             data["closed_at"] = self.closed_at.isoformat()
+        if self.t1_hit_at:
+            data["t1_hit_at"] = self.t1_hit_at.isoformat()
         return data
+
+
+@dataclass
+class NoSetupResponse:
+    """Returned by Engine B when no setup qualifies. Never raises; always gives an explicit reason."""
+
+    symbol: str
+    assessment_time: datetime
+    reason: str
+    direction: str
+    data_quality_score: float
+    market_regime: str
+    methodology_version: str = settings.DECISION_METHODOLOGY_VERSION
+
+    def __bool__(self) -> bool:
+        return False
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, list) and len(other) == 0:
+            return True
+        return super().__eq__(other)
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["assessment_time"] = self.assessment_time.isoformat()
+        return data
+

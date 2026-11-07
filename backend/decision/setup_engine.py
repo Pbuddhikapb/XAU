@@ -29,6 +29,7 @@ from backend.config import settings
 from backend.decision.models import (
     DirectionAssessment,
     DirectionType,
+    NoSetupResponse,
     SetupStatus,
     SetupType,
     TradeDirection,
@@ -41,6 +42,31 @@ logger = logging.getLogger(__name__)
 class TradeSetupEngine:
     """Authoritative Engine B for Trade Setup Identification."""
 
+    @staticmethod
+    def _initial_status(direction: DirectionType | str) -> SetupStatus:
+        dir_val = direction.value if isinstance(direction, DirectionType) else str(direction)
+        if dir_val in ("POTENTIAL_BULLISH", "POTENTIAL_BEARISH"):
+            return SetupStatus.POTENTIAL
+        return SetupStatus.CONFIRMED
+
+    @staticmethod
+    def _make_no_setup(
+        reason: str,
+        symbol: str,
+        as_of_time: datetime,
+        assessment: DirectionAssessment,
+    ) -> NoSetupResponse:
+        return NoSetupResponse(
+            symbol=symbol,
+            assessment_time=as_of_time,
+            reason=reason,
+            direction=assessment.direction.value
+            if isinstance(assessment.direction, DirectionType)
+            else str(assessment.direction),
+            data_quality_score=assessment.data_quality_score,
+            market_regime=assessment.market_regime,
+        )
+
     @classmethod
     def identify_setups(
         cls,
@@ -49,7 +75,7 @@ class TradeSetupEngine:
         symbol: str = "XAUUSDT",
         as_of_time: datetime | None = None,
         require_completed_candles: bool = True,
-    ) -> list[TradeSetupModel]:
+    ) -> list[TradeSetupModel] | NoSetupResponse:
         """
         Evaluate market condition and generate qualified trade setups.
         Only completed candles are evaluated.
@@ -58,24 +84,28 @@ class TradeSetupEngine:
             as_of_time = datetime.now(UTC)
 
         # Do not generate setups during inactive CME sessions or when data quality is insufficient
+        if assessment.market_regime == "SESSION_INACTIVE":
+            logger.info("Market regime is SESSION_INACTIVE: skipping setups")
+            return cls._make_no_setup("MARKET_CLOSED", symbol, as_of_time, assessment)
+
         if assessment.data_quality_score < settings.DATA_QUALITY_MIN_SCORE:
             logger.info(
                 "Data quality %.1f < %.1f: skipping setups",
                 assessment.data_quality_score,
                 settings.DATA_QUALITY_MIN_SCORE,
             )
-            return []
+            return cls._make_no_setup("DATA_QUALITY_BELOW_THRESHOLD", symbol, as_of_time, assessment)
 
         if assessment.direction == DirectionType.NEUTRAL:
             # Range rejections can still be evaluated in NEUTRAL range regimes if data quality is high
             if assessment.market_regime not in ["RANGE_BOUND"]:
-                return []
+                return cls._make_no_setup("NEUTRAL_NON_RANGE", symbol, as_of_time, assessment)
 
         df_1h = timeframe_data.get("1h", {}).get("df", pd.DataFrame())
         struct_1h = timeframe_data.get("1h", {}).get("structure", {})
 
         if df_1h.empty or len(df_1h) < 10:
-            return []
+            return cls._make_no_setup("INSUFFICIENT_DATA", symbol, as_of_time, assessment)
 
         # Enforce completed candles check:
         # A candle is completed if as_of_time >= candle close_time or candle open_time + timeframe_duration
@@ -88,7 +118,7 @@ class TradeSetupEngine:
             if as_of_time < last_close_time:
                 # Candle is still forming; reject setup generation
                 logger.info("Current bar is incomplete (as_of_time < close_time). Setup generation withheld.")
-                return []
+                return cls._make_no_setup("INCOMPLETE_CANDLE", symbol, as_of_time, assessment)
 
         setups: list[TradeSetupModel] = []
 
@@ -103,7 +133,10 @@ class TradeSetupEngine:
             setups.append(setup_br)
 
         # 3. Pattern 3: Liquidity Sweep Reversal
-        setup_sr = cls._detect_sweep_reversal(df_1h, struct_1h, as_of_time, symbol)
+        initial_sweep_status = cls._initial_status(assessment.direction)
+        setup_sr = cls._detect_sweep_reversal(
+            df_1h, struct_1h, as_of_time, symbol, initial_status=initial_sweep_status
+        )
         if setup_sr:
             setups.append(setup_sr)
 
@@ -111,6 +144,16 @@ class TradeSetupEngine:
         setup_rr = cls._detect_range_rejection(assessment, df_1h, struct_1h, as_of_time, symbol)
         if setup_rr:
             setups.append(setup_rr)
+
+        # Enforce max 1 setup per direction: keep the highest Net R:R per TradeDirection
+        best_by_dir: dict[TradeDirection, TradeSetupModel] = {}
+        for s in setups:
+            if s.direction not in best_by_dir or s.risk_reward_ratio > best_by_dir[s.direction].risk_reward_ratio:
+                best_by_dir[s.direction] = s
+        setups = list(best_by_dir.values())
+
+        if not setups:
+            return cls._make_no_setup("NO_PATTERN_QUALIFIED", symbol, as_of_time, assessment)
 
         return setups
 
@@ -129,10 +172,12 @@ class TradeSetupEngine:
     ) -> TradeSetupModel | None:
         """Pattern 1: Pullback to dynamic EMA/support in established trend."""
         direction = assessment.direction
-        if direction not in [DirectionType.BULLISH, DirectionType.BEARISH]:
+        bullish_variants = {DirectionType.BULLISH, DirectionType.POTENTIAL_BULLISH}
+        bearish_variants = {DirectionType.BEARISH, DirectionType.POTENTIAL_BEARISH}
+        if direction not in bullish_variants | bearish_variants:
             return None
 
-        trade_dir = TradeDirection.LONG if direction == DirectionType.BULLISH else TradeDirection.SHORT
+        trade_dir = TradeDirection.LONG if direction in bullish_variants else TradeDirection.SHORT
         close = float(df_1h["close"].iloc[-1])
         atr = (
             float(df_1h["atr_14"].iloc[-1]) if "atr_14" in df_1h.columns and pd.notna(df_1h["atr_14"].iloc[-1]) else 5.0
@@ -203,7 +248,7 @@ class TradeSetupEngine:
             setup_id=uuid.uuid4(),
             symbol=symbol,
             created_at=as_of_time,
-            status=SetupStatus.CONFIRMED,
+            status=cls._initial_status(direction),
             setup_type=SetupType.TREND_CONTINUATION,
             direction=trade_dir,
             timeframe="1h",
@@ -259,6 +304,13 @@ class TradeSetupEngine:
         bos_price = float(latest_bos.get("price", close))
         bos_type = str(latest_bos.get("event_type", ""))
 
+        bullish_variants = {DirectionType.BULLISH, DirectionType.POTENTIAL_BULLISH}
+        bearish_variants = {DirectionType.BEARISH, DirectionType.POTENTIAL_BEARISH}
+        if assessment.direction in bullish_variants and "BULLISH" not in bos_type:
+            return None
+        if assessment.direction in bearish_variants and "BEARISH" not in bos_type:
+            return None
+
         dist_to_bos = abs(close - bos_price)
         if dist_to_bos > 1.2 * atr:
             return None
@@ -301,7 +353,7 @@ class TradeSetupEngine:
             setup_id=uuid.uuid4(),
             symbol=symbol,
             created_at=as_of_time,
-            status=SetupStatus.CONFIRMED,
+            status=cls._initial_status(assessment.direction),
             setup_type=SetupType.BREAKOUT_RETEST,
             direction=trade_dir,
             timeframe="1h",
@@ -334,6 +386,7 @@ class TradeSetupEngine:
         struct_1h: dict[str, Any],
         as_of_time: datetime,
         symbol: str,
+        initial_status: SetupStatus = SetupStatus.CONFIRMED,
     ) -> TradeSetupModel | None:
         """Pattern 3: Liquidity sweep reversal with reclaim confirmation."""
         sweeps = struct_1h.get("liquidity_sweeps", [])
@@ -388,7 +441,7 @@ class TradeSetupEngine:
             setup_id=uuid.uuid4(),
             symbol=symbol,
             created_at=as_of_time,
-            status=SetupStatus.CONFIRMED,
+            status=initial_status,
             setup_type=SetupType.LIQUIDITY_SWEEP_REVERSAL,
             direction=trade_dir,
             timeframe="1h",

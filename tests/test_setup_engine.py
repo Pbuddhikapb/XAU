@@ -37,7 +37,7 @@ def make_bullish_pullback_candles(n: int = 60) -> pd.DataFrame:
     start_time = datetime(2026, 10, 20, 0, 0, tzinfo=UTC)
     times = [start_time + timedelta(hours=i) for i in range(n)]
     close_times = [t + timedelta(hours=1) for t in times]
-    prices = []
+    prices: list[float] = []
     for i in range(n):
         if i < n - 7:
             p = 2650.0 + (i * 1.5)

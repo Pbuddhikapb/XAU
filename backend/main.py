@@ -4,14 +4,17 @@ Provides versioned REST endpoints as mandated by Section 10 of PROJECT_SPECIFICA
 """
 
 import logging
+import os
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
 import pandas as pd
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,6 +42,7 @@ from backend.models.tables import (
 )
 from backend.structure.structure_engine import StructureEngine
 from backend.structure.support_resistance import detect_support_resistance_zones
+from backend.telemetry.websocket_hub import telemetry_hub
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +51,9 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan manager initializing tables and dependencies."""
     init_db()
+    await telemetry_hub.start_heartbeat(interval_seconds=10.0)
     yield
+    await telemetry_hub.stop_heartbeat()
 
 
 app = FastAPI(
@@ -649,5 +655,43 @@ async def get_signals_history(
 ) -> list[dict[str, Any]]:
     """Retrieve historical horizon signal outcomes and MFE/MAE excursions."""
     return await BacktestPersistence.get_signals_history(session=session, horizon=horizon, outcome=outcome, limit=limit)
+
+
+# -----------------------------------------------------------------------------
+# Phase 6: Web Dashboard WebSocket & Static Asset Serving
+# -----------------------------------------------------------------------------
+
+
+@app.websocket("/ws/telemetry")
+async def websocket_telemetry_endpoint(websocket: WebSocket) -> None:
+    """Multiplexed real-time telemetry stream for the web dashboard."""
+    await telemetry_hub.register(websocket)
+    try:
+        while True:
+            msg = await websocket.receive_text()
+            if msg == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        await telemetry_hub.unregister(websocket)
+    except (RuntimeError, OSError) as e:
+        logger.warning(f"WebSocket client error: {e}")
+        await telemetry_hub.unregister(websocket)
+
+
+# Mount static assets if compiled frontend exists (Single-port production serving)
+frontend_dist = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "dist"))
+if os.path.exists(frontend_dist):
+    assets_dir = os.path.join(frontend_dist, "assets")
+    if os.path.exists(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str) -> FileResponse:
+        """Fallback to index.html for client-side React SPA routing."""
+        file_path = os.path.join(frontend_dist, full_path)
+        if full_path and os.path.isfile(file_path):
+            return FileResponse(file_path)
+        return FileResponse(os.path.join(frontend_dist, "index.html"))
+
 
 

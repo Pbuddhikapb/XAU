@@ -1,0 +1,25 @@
+[Unit]
+Description=Binance XAUUSDT Live Ingestion & Multi-Timeframe Daemon
+After=network.target postgresql.service xau-backend.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/XAU
+EnvironmentFile=/home/ubuntu/XAU/.env
+ExecStart=/home/ubuntu/XAU/.venv/bin/python -m backend.data.live_daemon
+Restart=always
+RestartSec=10
+
+# Security & Sandboxing
+ProtectSystem=full
+PrivateTmp=true
+NoNewPrivileges=true
+
+# Resource Limits
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

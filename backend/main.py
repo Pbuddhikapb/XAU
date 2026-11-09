@@ -33,6 +33,7 @@ from backend.config import settings
 from backend.data.session_tracker import SessionTracker
 from backend.database import get_db_session, init_db
 from backend.decision.orchestrator import DecisionOrchestrator
+from backend.logging_config import setup_production_logging
 from backend.models.tables import (
     IndicatorSnapshot,
     LiveMarketState,
@@ -40,6 +41,7 @@ from backend.models.tables import (
     OHLCVCandle,
     StructureEvent,
 )
+from backend.security import verify_admin_key
 from backend.structure.structure_engine import StructureEngine
 from backend.structure.support_resistance import detect_support_resistance_zones
 from backend.telemetry.websocket_hub import telemetry_hub
@@ -50,6 +52,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager initializing tables and dependencies."""
+    setup_production_logging()
     init_db()
     await telemetry_hub.start_heartbeat(interval_seconds=10.0)
     yield
@@ -667,6 +670,7 @@ async def get_backtest_detail(
 async def execute_backtest(
     request: BacktestRunRequest,
     session: AsyncSession = Depends(get_db_session),
+    _: bool = Depends(verify_admin_key),
 ) -> dict[str, Any]:
     """Trigger a backtest simulation and persist results into PostgreSQL."""
     return await BacktestRunner.execute_and_persist(request=request, session=session)

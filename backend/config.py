@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     SPREAD_PCT: float = 0.0001     # 0.01% estimated average spread
     FUNDING_PCT: float = 0.0001    # 0.01% per-holding period estimated funding friction
 
+    # Phase 7: Production Hardening, Security & Infrastructure
+    ADMIN_API_KEY: str | None = None
+    LOG_DIR: str = "logs"
+    BACKUP_DIR: str = "/var/backups/xau_db"
+
     model_config = SettingsConfigDict(
         env_file=str(Path(__file__).parent.parent / ".env"), env_file_encoding="utf-8", extra="ignore"
     )

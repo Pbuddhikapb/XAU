@@ -1,0 +1,20 @@
+[Unit]
+Description=Binance XAUUSDT Production Health & Staleness Watchdog
+After=network.target xau-backend.service
+Wants=xau-backend.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/XAU
+EnvironmentFile=/home/ubuntu/XAU/.env
+ExecStart=/home/ubuntu/XAU/.venv/bin/python scripts/health_watchdog.py
+Restart=always
+RestartSec=15
+
+# Resource Limits
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

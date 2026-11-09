@@ -207,22 +207,30 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     if (showSweeps && structureEvents.length > 0) {
       const markers: SeriesMarker<Time>[] = [];
       structureEvents.forEach((ev) => {
-        if (ev.event_type.includes("SWEEP")) {
-          const time = (new Date(ev.event_time).getTime() / 1000) as Time;
-          const isHigh = ev.event_type.includes("HIGH") || ev.price >= (candles[candles.length - 1]?.close ?? 0);
-          markers.push({
-            time,
-            position: isHigh ? "aboveBar" : "belowBar",
-            color: isHigh ? "#f59e0b" : "#3b82f6",
-            shape: isHigh ? "arrowDown" : "arrowUp",
-            text: `Sweep $${ev.price.toFixed(1)}`,
-          });
-        }
+        try {
+          if (ev.event_type && ev.event_type.includes("SWEEP")) {
+            const time = (new Date(ev.event_time).getTime() / 1000) as Time;
+            const isHigh = ev.event_type.includes("HIGH") || ev.price >= (candles[candles.length - 1]?.close ?? 0);
+            markers.push({
+              time,
+              position: isHigh ? "aboveBar" : "belowBar",
+              color: isHigh ? "#f59e0b" : "#3b82f6",
+              shape: isHigh ? "arrowDown" : "arrowUp",
+              text: `Sweep $${ev.price.toFixed(1)}`,
+            });
+          }
+        } catch {}
       });
-      markers.sort((a, b) => (Number(a.time) - Number(b.time)));
-      candleSeriesRef.current.setMarkers(markers);
+      markers.sort((a, b) => Number(a.time) - Number(b.time));
+      try {
+        candleSeriesRef.current?.setMarkers(markers);
+      } catch (err) {
+        console.warn("Could not set markers:", err);
+      }
     } else {
-      candleSeriesRef.current.setMarkers([]);
+      try {
+        candleSeriesRef.current?.setMarkers([]);
+      } catch {}
     }
 
     // Cleanup and draw price lines
@@ -236,17 +244,28 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     // Support and Resistance Lines
     if (showLevels && structureLevels.length > 0) {
       structureLevels.forEach((lvl) => {
-        const isSupport = lvl.level_type === "SUPPORT";
-        const midPrice = (lvl.price_min + lvl.price_max) / 2;
-        const line = candleSeriesRef.current?.createPriceLine({
-          price: midPrice,
-          color: isSupport ? "rgba(16, 185, 129, 0.6)" : "rgba(239, 68, 68, 0.6)",
-          lineWidth: 1,
-          lineStyle: 1, // Dotted
-          axisLabelVisible: true,
-          title: `${lvl.level_type.substring(0, 3)} (${lvl.touch_count}x)`,
-        });
-        if (line) priceLinesRef.current.push(line);
+        try {
+          const type = lvl.zone_type || lvl.level_type || "LEVEL";
+          const isSupport = type === "SUPPORT";
+          const minP = lvl.level_min ?? lvl.price_min ?? 0;
+          const maxP = lvl.level_max ?? lvl.price_max ?? 0;
+          const midPrice = lvl.level_center ?? ((minP + maxP) / 2 || minP || maxP);
+          const count = lvl.touches_count ?? lvl.touch_count ?? 1;
+
+          if (!isNaN(midPrice) && midPrice > 0) {
+            const line = candleSeriesRef.current?.createPriceLine({
+              price: midPrice,
+              color: isSupport ? "rgba(16, 185, 129, 0.6)" : "rgba(239, 68, 68, 0.6)",
+              lineWidth: 1,
+              lineStyle: 1, // Dotted
+              axisLabelVisible: true,
+              title: `${type.substring(0, 3)} (${count}x)`,
+            });
+            if (line) priceLinesRef.current.push(line);
+          }
+        } catch (err) {
+          console.warn("Failed to plot S/R level:", err);
+        }
       });
     }
 

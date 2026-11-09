@@ -64,11 +64,17 @@ export interface IndicatorSnapshot {
 }
 
 export interface StructureZone {
-  level_type: "SUPPORT" | "RESISTANCE";
-  price_min: number;
-  price_max: number;
-  touch_count: number;
-  strength: number;
+  zone_type?: "SUPPORT" | "RESISTANCE";
+  level_type?: "SUPPORT" | "RESISTANCE";
+  level_center?: number;
+  level_min?: number;
+  level_max?: number;
+  price_min?: number;
+  price_max?: number;
+  touches_count?: number;
+  touch_count?: number;
+  strength?: number;
+  is_active?: boolean;
 }
 
 export interface StructureEvent {
@@ -82,10 +88,12 @@ export interface StructureEvent {
 }
 
 export interface EvidenceItem {
-  category: string;
-  indicator: string;
+  category?: string;
+  factor?: string;
+  indicator?: string;
   description: string;
-  weight: number;
+  weight?: number;
+  score_contribution?: number;
 }
 
 export interface InvalidationConditions {

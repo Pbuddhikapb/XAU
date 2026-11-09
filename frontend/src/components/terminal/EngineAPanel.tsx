@@ -140,7 +140,9 @@ export const EngineAPanel: React.FC<EngineAPanelProps> = ({ analysis, isLoading 
               analysis.supporting_evidence.map((ev, idx) => (
                 <div key={idx} className="bg-card p-1.5 rounded border border-border text-[11px] flex justify-between gap-1">
                   <span className="text-slate-300">{ev.description}</span>
-                  <span className="text-bull-400 font-bold shrink-0">+{ev.weight}</span>
+                  <span className="text-bull-400 font-bold shrink-0">
+                    +{ev.score_contribution !== undefined ? ev.score_contribution : (ev.weight ?? 0)}
+                  </span>
                 </div>
               ))
             ) : (
@@ -159,7 +161,9 @@ export const EngineAPanel: React.FC<EngineAPanelProps> = ({ analysis, isLoading 
               analysis.contradicting_evidence.map((ev, idx) => (
                 <div key={idx} className="bg-card p-1.5 rounded border border-border text-[11px] flex justify-between gap-1">
                   <span className="text-slate-300">{ev.description}</span>
-                  <span className="text-bear-400 font-bold shrink-0">-{ev.weight}</span>
+                  <span className="text-bear-400 font-bold shrink-0">
+                    -{ev.score_contribution !== undefined ? ev.score_contribution : (ev.weight ?? 0)}
+                  </span>
                 </div>
               ))
             ) : (

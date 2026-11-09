@@ -172,7 +172,11 @@ async def get_market_overview(session: AsyncSession = Depends(get_db_session)) -
                 "best_bid": round(price - 0.05, 2),
                 "best_ask": round(price + 0.05, 2),
                 "spread": 0.10,
-                "tradfi_session_state": SessionTracker.get_session_state(datetime.now(UTC)),
+                "tradfi_session_state": getattr(
+                    SessionTracker.get_session_state(datetime.now(UTC)),
+                    "value",
+                    str(SessionTracker.get_session_state(datetime.now(UTC))),
+                ),
                 "last_update": latest_c.close_time.isoformat(),
             }
 

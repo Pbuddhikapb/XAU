@@ -403,6 +403,8 @@ class BinanceScheduleProvider(ScheduleProvider):
         self.fallback = fallback or FallbackScheduleProvider()
         self.poller = poller or BinanceSchedulePoller()
         self._parsed_intervals: list[dict[str, Any]] = []
+        self._warned_no_schedule: bool = False
+        self._warned_stale: bool = False
 
         if schedule_data:
             self._parse_schedule(schedule_data)
@@ -414,6 +416,8 @@ class BinanceScheduleProvider(ScheduleProvider):
             self.schedule_data = data
             self.retrieval_time = datetime.now(UTC)
             self._parse_schedule(data)
+            self._warned_no_schedule = False
+            self._warned_stale = False
             return True
         logger.warning("Binance schedule refresh failed. Operating on fallback provider.")
         return False
@@ -473,20 +477,34 @@ class BinanceScheduleProvider(ScheduleProvider):
         else:
             dt = dt.astimezone(UTC)
 
-        # If no valid schedule parsed, log warning and delegate to fallback
+        # If no valid schedule parsed, log warning once and delegate to fallback
         if not self._parsed_intervals:
-            logger.warning(
-                "No valid Binance trading schedule available for %s. Falling back to CME ET calendar.",
-                dt.isoformat(),
-            )
+            if not self._warned_no_schedule:
+                logger.warning(
+                    "No valid Binance trading schedule available for %s. Falling back to CME ET calendar.",
+                    dt.isoformat(),
+                )
+                self._warned_no_schedule = True
+            else:
+                logger.debug(
+                    "No valid Binance trading schedule available for %s. Using CME fallback.",
+                    dt.isoformat(),
+                )
             return self.fallback.get_session_state(dt)
 
         stale = self.is_stale(dt)
         if stale:
-            logger.warning(
-                "Binance trading schedule is stale (older than %sh). Falling back to CME ET calendar.",
-                self.max_staleness_hours,
-            )
+            if not self._warned_stale:
+                logger.warning(
+                    "Binance trading schedule is stale (older than %sh). Falling back to CME ET calendar.",
+                    self.max_staleness_hours,
+                )
+                self._warned_stale = True
+            else:
+                logger.debug(
+                    "Binance trading schedule is stale for %s. Using CME fallback.",
+                    dt.isoformat(),
+                )
 
         # Search for interval containing dt
         for interval in self._parsed_intervals:

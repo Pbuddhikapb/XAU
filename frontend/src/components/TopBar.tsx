@@ -57,13 +57,13 @@ export const TopBar: React.FC<TopBarProps> = ({
     return () => clearInterval(interval);
   }, [marketState?.next_funding_time]);
 
-  const lastPrice = marketState?.last_price ?? 0;
-  const markPrice = marketState?.mark_price ?? 0;
-  const indexPrice = marketState?.index_price ?? 0;
-  const basis = marketState?.basis ?? 0;
-  const spread = marketState?.spread ?? 0;
-  const fundingRate = marketState?.funding_rate ?? 0;
-  const tradfiSession = marketState?.tradfi_session_state ?? "REGULAR";
+  const lastPrice = Number(marketState?.last_price) || 0;
+  const markPrice = Number(marketState?.mark_price) || 0;
+  const indexPrice = Number(marketState?.index_price) || 0;
+  const basis = Number(marketState?.basis) || 0;
+  const spread = Number(marketState?.spread) || 0;
+  const fundingRate = Number(marketState?.funding_rate) || 0;
+  const tradfiSession = String(marketState?.tradfi_session_state || "REGULAR");
 
   return (
     <header className="bg-surface border-b border-border sticky top-0 z-50 select-none">

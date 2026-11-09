@@ -42,10 +42,10 @@ export const EngineAPanel: React.FC<EngineAPanelProps> = ({ analysis, isLoading 
           <span className="text-slate-400">DATA QUALITY:</span>
           <span
             className={`font-bold ${
-              analysis.data_quality_score >= 70 ? "text-bull-400" : "text-bear-400"
+              (Number(analysis.data_quality_score) || 0) >= 70 ? "text-bull-400" : "text-bear-400"
             }`}
           >
-            {analysis.data_quality_score.toFixed(0)}/100
+            {(Number(analysis.data_quality_score) || 0).toFixed(0)}/100
           </span>
         </div>
       </div>
@@ -87,23 +87,23 @@ export const EngineAPanel: React.FC<EngineAPanelProps> = ({ analysis, isLoading 
         <div className="space-y-1.5 bg-card/60 p-2.5 rounded border border-border">
           <div className="flex justify-between text-[11px]">
             <span className="text-slate-400">Bullish Score:</span>
-            <span className="font-bold text-bull-400">{analysis.bullish_score.toFixed(1)} / 100</span>
+            <span className="font-bold text-bull-400">{(Number(analysis.bullish_score) || 0).toFixed(1)} / 100</span>
           </div>
           <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
             <div
               className="bg-bull-500 h-1.5 rounded-full transition-all duration-500"
-              style={{ width: `${Math.min(100, Math.max(0, analysis.bullish_score))}%` }}
+              style={{ width: `${Math.min(100, Math.max(0, Number(analysis.bullish_score) || 0))}%` }}
             />
           </div>
 
           <div className="flex justify-between text-[11px] pt-1">
             <span className="text-slate-400">Bearish Score:</span>
-            <span className="font-bold text-bear-400">{analysis.bearish_score.toFixed(1)} / 100</span>
+            <span className="font-bold text-bear-400">{(Number(analysis.bearish_score) || 0).toFixed(1)} / 100</span>
           </div>
           <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
             <div
               className="bg-bear-500 h-1.5 rounded-full transition-all duration-500"
-              style={{ width: `${Math.min(100, Math.max(0, analysis.bearish_score))}%` }}
+              style={{ width: `${Math.min(100, Math.max(0, Number(analysis.bearish_score) || 0))}%` }}
             />
           </div>
         </div>

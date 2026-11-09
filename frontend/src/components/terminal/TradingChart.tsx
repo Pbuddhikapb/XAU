@@ -271,44 +271,68 @@ export const TradingChart: React.FC<TradingChartProps> = ({
 
     // Active Setup Lines
     if (showSetup && activeSetup) {
-      // Entry Line
-      const entryLine = candleSeriesRef.current?.createPriceLine({
-        price: (activeSetup.entry_price_min + activeSetup.entry_price_max) / 2,
-        color: "#38bdf8",
-        lineWidth: 2,
-        lineStyle: 0, // Solid
-        axisLabelVisible: true,
-        title: `ENTRY (${activeSetup.direction})`,
-      });
-      if (entryLine) priceLinesRef.current.push(entryLine);
+      try {
+        const entryMin = Number(activeSetup.entry_price_min ?? activeSetup.entry_zone_min);
+        const entryMax = Number(activeSetup.entry_price_max ?? activeSetup.entry_zone_max);
+        const entryPrice =
+          !isNaN(entryMin) && !isNaN(entryMax) && entryMin > 0 && entryMax > 0
+            ? (entryMin + entryMax) / 2
+            : !isNaN(entryMin) && entryMin > 0
+            ? entryMin
+            : !isNaN(entryMax) && entryMax > 0
+            ? entryMax
+            : null;
 
-      // Stop Loss Line
-      const slLine = candleSeriesRef.current?.createPriceLine({
-        price: activeSetup.active_stop_loss || activeSetup.stop_loss,
-        color: "#ef4444",
-        lineWidth: 2,
-        lineStyle: 0,
-        axisLabelVisible: true,
-        title: activeSetup.breakeven_locked ? "SL (BREAKEVEN LOCKED)" : "STOP LOSS",
-      });
-      if (slLine) priceLinesRef.current.push(slLine);
+        if (entryPrice !== null && !isNaN(entryPrice) && entryPrice > 0) {
+          const entryLine = candleSeriesRef.current?.createPriceLine({
+            price: entryPrice,
+            color: "#38bdf8",
+            lineWidth: 2,
+            lineStyle: 0, // Solid
+            axisLabelVisible: true,
+            title: `ENTRY (${activeSetup.direction || ""})`,
+          });
+          if (entryLine) priceLinesRef.current.push(entryLine);
+        }
 
-      // Target Lines
-      [
-        { p: activeSetup.target_1, label: "T1 (Lock BE)" },
-        { p: activeSetup.target_2, label: "T2" },
-        { p: activeSetup.target_3, label: "T3 (Terminal)" },
-      ].forEach(({ p, label }) => {
-        const tLine = candleSeriesRef.current?.createPriceLine({
-          price: p,
-          color: "#10b981",
-          lineWidth: 1,
-          lineStyle: 2,
-          axisLabelVisible: true,
-          title: label,
+        // Stop Loss Line
+        const slRaw = activeSetup.active_stop_loss || activeSetup.stop_loss;
+        const slPrice = Number(slRaw);
+        if (!isNaN(slPrice) && slPrice > 0) {
+          const slLine = candleSeriesRef.current?.createPriceLine({
+            price: slPrice,
+            color: "#ef4444",
+            lineWidth: 2,
+            lineStyle: 0,
+            axisLabelVisible: true,
+            title: activeSetup.breakeven_locked ? "SL (BREAKEVEN LOCKED)" : "STOP LOSS",
+          });
+          if (slLine) priceLinesRef.current.push(slLine);
+        }
+
+        // Target Lines
+        const targetDefs = [
+          { p: Number(activeSetup.target_1), label: "T1 (Lock BE)" },
+          { p: activeSetup.target_2 != null ? Number(activeSetup.target_2) : NaN, label: "T2" },
+          { p: activeSetup.target_3 != null ? Number(activeSetup.target_3) : NaN, label: "T3 (Terminal)" },
+        ];
+
+        targetDefs.forEach(({ p, label }) => {
+          if (!isNaN(p) && p > 0) {
+            const tLine = candleSeriesRef.current?.createPriceLine({
+              price: p,
+              color: "#10b981",
+              lineWidth: 1,
+              lineStyle: 2,
+              axisLabelVisible: true,
+              title: label,
+            });
+            if (tLine) priceLinesRef.current.push(tLine);
+          }
         });
-        if (tLine) priceLinesRef.current.push(tLine);
-      });
+      } catch (err) {
+        console.warn("Could not plot active setup price lines:", err);
+      }
     }
 
     chartRef.current?.timeScale().fitContent();

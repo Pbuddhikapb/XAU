@@ -3,6 +3,7 @@ Database connectivity and session management.
 Provides both asynchronous (asyncpg) and synchronous (psycopg2) engine sessions.
 """
 
+import sys
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 
@@ -23,12 +24,23 @@ class Base(DeclarativeBase):
     """Base class for all SQLAlchemy ORM models."""
 
 
-# Asynchronous engine & session
-async_engine: AsyncEngine = create_async_engine(
-    settings.DATABASE_URL,
-    poolclass=NullPool,
-    echo=False,
-)
+# Asynchronous engine & session with connection pooling in production, NullPool in tests
+_is_pytest = "pytest" in sys.modules or settings.ENVIRONMENT == "test"
+if _is_pytest:
+    async_engine: AsyncEngine = create_async_engine(
+        settings.DATABASE_URL,
+        poolclass=NullPool,
+        echo=False,
+    )
+else:
+    async_engine = create_async_engine(
+        settings.DATABASE_URL,
+        pool_size=10,
+        max_overflow=5,
+        pool_pre_ping=True,
+        pool_recycle=1800,
+        echo=False,
+    )
 
 AsyncSessionLocal = async_sessionmaker(
     bind=async_engine,

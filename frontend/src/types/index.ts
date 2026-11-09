@@ -122,20 +122,23 @@ export interface DirectionAnalysis {
 }
 
 export interface TradeSetup {
-  id: string;
+  id?: string;
+  setup_id?: string;
   symbol: string;
   setup_type: string;
   direction: "LONG" | "SHORT";
   status: "POTENTIAL" | "CONFIRMED" | "TRIGGERED" | "TARGET_1_HIT" | "TARGET_2_HIT" | "TARGET_3_HIT" | "STOPPED_OUT" | "STOPPED_OUT_BREAKEVEN" | "INVALIDATED" | "EXPIRED_UNTRIGGERED";
   timeframe: string;
-  entry_price_min: number;
-  entry_price_max: number;
+  entry_price_min?: number;
+  entry_price_max?: number;
+  entry_zone_min?: number;
+  entry_zone_max?: number;
   stop_loss: number;
-  active_stop_loss: number;
-  breakeven_locked: boolean;
+  active_stop_loss?: number | null;
+  breakeven_locked?: boolean;
   target_1: number;
-  target_2: number;
-  target_3: number;
+  target_2?: number | null;
+  target_3?: number | null;
   risk_reward_ratio: number;
   created_at: string;
   triggered_at?: string | null;
@@ -143,6 +146,7 @@ export interface TradeSetup {
   outcome?: string | null;
   realized_pnl_pct?: number | null;
   invalidation_reason?: string | null;
+  invalidation_conditions?: string | null;
 }
 
 export interface NoSetupResponse {

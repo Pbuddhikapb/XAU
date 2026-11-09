@@ -85,7 +85,8 @@ export const EngineBPanel: React.FC<EngineBPanelProps> = ({ setupsResponse, isLo
               <div className="bg-card p-2 rounded border border-border">
                 <span className="text-[10px] text-slate-400 block">ENTRY ZONE</span>
                 <span className="text-slate-100 font-bold">
-                  ${activeSetup.entry_price_min.toFixed(2)} – ${activeSetup.entry_price_max.toFixed(2)}
+                  ${Number(activeSetup.entry_price_min ?? activeSetup.entry_zone_min ?? 0).toFixed(2)} – $
+                  {Number(activeSetup.entry_price_max ?? activeSetup.entry_zone_max ?? 0).toFixed(2)}
                 </span>
               </div>
 
@@ -103,7 +104,7 @@ export const EngineBPanel: React.FC<EngineBPanelProps> = ({ setupsResponse, isLo
                     activeSetup.breakeven_locked ? "text-gold-400" : "text-bear-400"
                   }`}
                 >
-                  ${(activeSetup.active_stop_loss || activeSetup.stop_loss).toFixed(2)}
+                  ${Number(activeSetup.active_stop_loss || activeSetup.stop_loss || 0).toFixed(2)}
                 </span>
               </div>
             </div>
@@ -112,15 +113,21 @@ export const EngineBPanel: React.FC<EngineBPanelProps> = ({ setupsResponse, isLo
             <div className="space-y-1 bg-card/60 p-2.5 rounded border border-border">
               <div className="flex justify-between items-center text-[11px]">
                 <span className="text-slate-400">Target 1 (Breakeven Trigger):</span>
-                <span className="font-bold text-bull-400">${activeSetup.target_1.toFixed(2)}</span>
+                <span className="font-bold text-bull-400">
+                  {activeSetup.target_1 != null ? `$${Number(activeSetup.target_1).toFixed(2)}` : "—"}
+                </span>
               </div>
               <div className="flex justify-between items-center text-[11px]">
                 <span className="text-slate-400">Target 2 (Partial Scaling):</span>
-                <span className="font-bold text-bull-400">${activeSetup.target_2.toFixed(2)}</span>
+                <span className="font-bold text-bull-400">
+                  {activeSetup.target_2 != null ? `$${Number(activeSetup.target_2).toFixed(2)}` : "—"}
+                </span>
               </div>
               <div className="flex justify-between items-center text-[11px]">
                 <span className="text-slate-400">Target 3 (Terminal Exit):</span>
-                <span className="font-bold text-emerald-400">${activeSetup.target_3.toFixed(2)}</span>
+                <span className="font-bold text-emerald-400">
+                  {activeSetup.target_3 != null ? `$${Number(activeSetup.target_3).toFixed(2)}` : "—"}
+                </span>
               </div>
             </div>
 
@@ -130,10 +137,10 @@ export const EngineBPanel: React.FC<EngineBPanelProps> = ({ setupsResponse, isLo
                 <span className="text-[10px] text-slate-400 block">NET RISK:REWARD</span>
                 <span
                   className={`text-sm font-bold ${
-                    activeSetup.risk_reward_ratio >= 1.5 ? "text-bull-400" : "text-bear-400"
+                    (Number(activeSetup.risk_reward_ratio) || 0) >= 1.5 ? "text-bull-400" : "text-bear-400"
                   }`}
                 >
-                  1 : {activeSetup.risk_reward_ratio.toFixed(2)}
+                  1 : {(Number(activeSetup.risk_reward_ratio) || 0).toFixed(2)}
                 </span>
               </div>
               <div className="text-right text-[10px] text-slate-400">
@@ -145,7 +152,7 @@ export const EngineBPanel: React.FC<EngineBPanelProps> = ({ setupsResponse, isLo
             {/* Invalidation Rules */}
             <div className="bg-card p-2 rounded border border-border text-[10px] text-slate-400">
               <span className="text-slate-200 font-medium">Auto-Invalidation: </span>
-              {activeSetup.invalidation_reason || "Invalidates if opposing directional bias confirmed or bar limit reached."}
+              {activeSetup.invalidation_reason || activeSetup.invalidation_conditions || "Invalidates if opposing directional bias confirmed or bar limit reached."}
             </div>
           </>
         ) : (

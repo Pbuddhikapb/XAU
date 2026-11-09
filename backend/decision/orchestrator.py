@@ -9,6 +9,7 @@ Strictly conforms to Section 6, 7, 8, 9, and 10 of PROJECT_SPECIFICATION.md:
 """
 
 import logging
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -40,6 +41,9 @@ logger = logging.getLogger(__name__)
 
 class DecisionOrchestrator:
     """Authoritative Decision & Trade Setup Pipeline Orchestrator."""
+
+    _live_analysis_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+    _live_setups_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
     @classmethod
     def process_timeframe_data(
@@ -241,12 +245,20 @@ class DecisionOrchestrator:
         max_age_seconds: int = 60,
     ) -> dict[str, Any]:
         """
-        Fast-path: Query latest cached analysis from PostgreSQL market_analysis.
+        Fast-path: Query latest cached analysis from in-memory cache or PostgreSQL market_analysis.
         If cache is missing or older than max_age_seconds, compute on demand and persist.
         """
+        sym_key = symbol.upper()
+        now_mono = time.monotonic()
+        mem_cached = cls._live_analysis_cache.get(sym_key)
+        if mem_cached and (now_mono - mem_cached[0] < min(3.0, float(max_age_seconds))):
+            cached_copy = dict(mem_cached[1])
+            cached_copy["source"] = "CACHE"
+            return cached_copy
+
         stmt = (
             select(MarketAnalysis)
-            .where(MarketAnalysis.symbol == symbol.upper())
+            .where(MarketAnalysis.symbol == sym_key)
             .order_by(MarketAnalysis.assessment_time.desc())
             .limit(1)
         )
@@ -260,7 +272,7 @@ class DecisionOrchestrator:
                 rec_time = rec_time.replace(tzinfo=UTC)
             age = (now - rec_time).total_seconds()
             if age <= max_age_seconds:
-                return {
+                res_cache = {
                     "symbol": record.symbol,
                     "assessment_time": rec_time.isoformat(),
                     "direction": record.direction,
@@ -285,10 +297,12 @@ class DecisionOrchestrator:
                     "is_live": record.is_live,
                     "source": "CACHE",
                 }
+                cls._live_analysis_cache[sym_key] = (time.monotonic(), res_cache)
+                return res_cache
 
         # Fallback path: compute live and persist
         assessment, _ = await cls.run_current_pipeline(symbol=symbol, persist=True)
-        return {
+        res_computed = {
             "symbol": assessment.symbol,
             "assessment_time": assessment.assessment_time.isoformat(),
             "direction": assessment.direction.value if hasattr(assessment.direction, "value") else assessment.direction,
@@ -317,6 +331,8 @@ class DecisionOrchestrator:
             "is_live": assessment.is_live,
             "source": "COMPUTED",
         }
+        cls._live_analysis_cache[sym_key] = (time.monotonic(), res_computed)
+        return res_computed
 
     @classmethod
     async def auto_invalidate_active_opposing_setups(
@@ -370,17 +386,25 @@ class DecisionOrchestrator:
         max_age_minutes: int = 5,
     ) -> dict[str, Any]:
         """
-        Fast-path: Query active setups (POTENTIAL, CONFIRMED, TRIGGERED) from PostgreSQL.
+        Fast-path: Query active setups (POTENTIAL, CONFIRMED, TRIGGERED) from in-memory cache or PostgreSQL.
         If fresh active setups exist within max_age_minutes, return them.
         Slow-path: If stale or no active setups found, execute the pipeline to compute latest.
         If no setup qualifies, returns an explicit NO_SETUP response dict with reason.
         """
+        sym_key = symbol.upper()
+        now_mono = time.monotonic()
+        mem_cached = cls._live_setups_cache.get(sym_key)
+        if mem_cached and (now_mono - mem_cached[0] < min(3.0, float(max_age_minutes * 60))):
+            cached_copy = dict(mem_cached[1])
+            cached_copy["source"] = "CACHE"
+            return cached_copy
+
         active_statuses = ["POTENTIAL", "CONFIRMED", "TRIGGERED"]
         now = datetime.now(UTC)
         stmt = (
             select(TradeSetup)
             .where(
-                TradeSetup.symbol == symbol.upper(),
+                TradeSetup.symbol == sym_key,
                 TradeSetup.status.in_(active_statuses),
                 TradeSetup.expiration_time > now,
             )
@@ -421,20 +445,22 @@ class DecisionOrchestrator:
                     }
                     for r in records
                 ]
-                return {
-                    "symbol": symbol.upper(),
+                res_cache = {
+                    "symbol": sym_key,
                     "has_active_setup": True,
                     "no_setup": False,
                     "count": len(setups_data),
                     "setups": setups_data,
                     "source": "CACHE",
                 }
+                cls._live_setups_cache[sym_key] = (time.monotonic(), res_cache)
+                return res_cache
 
         # Fallback path: execute live pipeline and persist
         assessment, setups = await cls.run_current_pipeline(symbol=symbol, persist=True)
         if isinstance(setups, NoSetupResponse):
-            return {
-                "symbol": symbol.upper(),
+            res_no_setup = {
+                "symbol": sym_key,
                 "has_active_setup": False,
                 "no_setup": True,
                 "reason": setups.reason,
@@ -446,19 +472,23 @@ class DecisionOrchestrator:
                 "setups": [],
                 "source": "COMPUTED",
             }
+            cls._live_setups_cache[sym_key] = (time.monotonic(), res_no_setup)
+            return res_no_setup
 
         if setups:
-            return {
-                "symbol": symbol.upper(),
+            res_setups = {
+                "symbol": sym_key,
                 "has_active_setup": True,
                 "no_setup": False,
                 "count": len(setups),
                 "setups": [s.to_dict() for s in setups],
                 "source": "COMPUTED",
             }
+            cls._live_setups_cache[sym_key] = (time.monotonic(), res_setups)
+            return res_setups
 
-        return {
-            "symbol": symbol.upper(),
+        res_final = {
+            "symbol": sym_key,
             "has_active_setup": False,
             "no_setup": True,
             "reason": "NO_PATTERN_QUALIFIED",
@@ -474,6 +504,8 @@ class DecisionOrchestrator:
             "setups": [],
             "source": "COMPUTED",
         }
+        cls._live_setups_cache[sym_key] = (time.monotonic(), res_final)
+        return res_final
 
     @classmethod
     async def get_setups_history(

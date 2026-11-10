@@ -104,7 +104,7 @@ class DecisionOrchestrator:
 
     @classmethod
     async def run_current_pipeline(
-        cls, symbol: str = "XAUUSDT", persist: bool = True
+        cls, symbol: str = "XAUUSDT", persist: bool = True, session: AsyncSession | None = None
     ) -> tuple[DirectionAssessment, list[TradeSetupModel] | NoSetupResponse]:
         """
         Query recent candles across 1D, 4H, 1H, 15M, and 5M from the database,
@@ -113,36 +113,42 @@ class DecisionOrchestrator:
         timeframes = settings.PRIMARY_TIMEFRAMES
         raw_candles: dict[str, pd.DataFrame] = {}
 
-        try:
-            async with get_async_session() as session:
-                for tf in timeframes:
-                    stmt = (
-                        select(OHLCVCandle)
-                        .where(OHLCVCandle.symbol == symbol.upper(), OHLCVCandle.timeframe == tf)
-                        .order_by(OHLCVCandle.open_time.desc())
-                        .limit(150)
-                    )
-                    res = await session.execute(stmt)
-                    candles = list(reversed(res.scalars().all()))
+        async def _query_candles(s: AsyncSession) -> None:
+            for tf in timeframes:
+                stmt = (
+                    select(OHLCVCandle)
+                    .where(OHLCVCandle.symbol == symbol.upper(), OHLCVCandle.timeframe == tf)
+                    .order_by(OHLCVCandle.open_time.desc())
+                    .limit(150)
+                )
+                res = await s.execute(stmt)
+                candles = list(reversed(res.scalars().all()))
 
-                    if candles:
-                        df = pd.DataFrame(
-                            [
-                                {
-                                    "open_time": c.open_time,
-                                    "open": float(c.open),
-                                    "high": float(c.high),
-                                    "low": float(c.low),
-                                    "close": float(c.close),
-                                    "volume": float(c.volume),
-                                    "taker_buy_volume": float(c.taker_buy_volume)
-                                    if c.taker_buy_volume is not None
-                                    else 0.0,
-                                }
-                                for c in candles
-                            ]
-                        )
-                        raw_candles[tf] = df
+                if candles:
+                    df = pd.DataFrame(
+                        [
+                            {
+                                "open_time": c.open_time,
+                                "open": float(c.open),
+                                "high": float(c.high),
+                                "low": float(c.low),
+                                "close": float(c.close),
+                                "volume": float(c.volume),
+                                "taker_buy_volume": float(c.taker_buy_volume)
+                                if c.taker_buy_volume is not None
+                                else 0.0,
+                            }
+                            for c in candles
+                        ]
+                    )
+                    raw_candles[tf] = df
+
+        try:
+            if session:
+                await _query_candles(session)
+            else:
+                async with get_async_session() as s:
+                    await _query_candles(s)
         except (SQLAlchemyError, ValueError, KeyError, TypeError, OSError) as e:
             logger.error("Failed to query candles for decision pipeline: %s", e)
 
@@ -154,88 +160,98 @@ class DecisionOrchestrator:
         )
 
         if persist:
-            await cls.persist_assessment(assessment)
-            await cls.auto_invalidate_active_opposing_setups(symbol, assessment.direction)
+            await cls.persist_assessment(assessment, session=session)
+            await cls.auto_invalidate_active_opposing_setups(symbol, assessment.direction, session=session)
             if setups and isinstance(setups, list):
-                await cls.persist_setups(setups)
+                await cls.persist_setups(setups, session=session)
 
         return assessment, setups
 
     @classmethod
-    async def persist_assessment(cls, assessment: DirectionAssessment) -> bool:
+    async def persist_assessment(cls, assessment: DirectionAssessment, session: AsyncSession | None = None) -> bool:
         """Persist DirectionAssessment to PostgreSQL market_analysis table."""
+        async def _save(s: AsyncSession) -> bool:
+            record = MarketAnalysis(
+                symbol=assessment.symbol,
+                assessment_time=assessment.assessment_time,
+                direction=assessment.direction.value
+                if isinstance(assessment.direction, DirectionType)
+                else assessment.direction,
+                bullish_score=assessment.bullish_score,
+                bearish_score=assessment.bearish_score,
+                structure_score=assessment.breakdown.structure_score,
+                mtf_trend_score=assessment.breakdown.mtf_trend_score,
+                momentum_score=assessment.breakdown.momentum_score,
+                volume_score=assessment.breakdown.volume_score,
+                liquidity_score=assessment.breakdown.liquidity_score,
+                volatility_pa_score=assessment.breakdown.volatility_pa_score,
+                supporting_evidence=assessment.supporting_evidence,
+                contradicting_evidence=assessment.contradicting_evidence,
+                timeframe_alignment=assessment.timeframe_alignment,
+                key_levels=assessment.key_levels,
+                invalidation_conditions=assessment.invalidation_conditions,
+                data_quality_score=assessment.data_quality_score,
+                methodology_version=assessment.methodology_version,
+                is_live=assessment.is_live,
+            )
+            s.add(record)
+            await s.commit()
+            return True
+
         try:
-            async with get_async_session() as session:
-                record = MarketAnalysis(
-                    symbol=assessment.symbol,
-                    assessment_time=assessment.assessment_time,
-                    direction=assessment.direction.value
-                    if isinstance(assessment.direction, DirectionType)
-                    else assessment.direction,
-                    bullish_score=assessment.bullish_score,
-                    bearish_score=assessment.bearish_score,
-                    structure_score=assessment.breakdown.structure_score,
-                    mtf_trend_score=assessment.breakdown.mtf_trend_score,
-                    momentum_score=assessment.breakdown.momentum_score,
-                    volume_score=assessment.breakdown.volume_score,
-                    liquidity_score=assessment.breakdown.liquidity_score,
-                    volatility_pa_score=assessment.breakdown.volatility_pa_score,
-                    supporting_evidence=assessment.supporting_evidence,
-                    contradicting_evidence=assessment.contradicting_evidence,
-                    timeframe_alignment=assessment.timeframe_alignment,
-                    key_levels=assessment.key_levels,
-                    invalidation_conditions=assessment.invalidation_conditions,
-                    data_quality_score=assessment.data_quality_score,
-                    methodology_version=assessment.methodology_version,
-                    is_live=assessment.is_live,
-                )
-                session.add(record)
-                await session.commit()
-                return True
+            if session:
+                return await _save(session)
+            async with get_async_session() as s:
+                return await _save(s)
         except SQLAlchemyError as exc:
             logger.error("Failed to persist MarketAnalysis: %s", exc)
             return False
 
     @classmethod
-    async def persist_setups(cls, setups: list[TradeSetupModel]) -> int:
+    async def persist_setups(cls, setups: list[TradeSetupModel], session: AsyncSession | None = None) -> int:
         """Persist TradeSetups to PostgreSQL trade_setups table."""
         if not setups:
             return 0
 
-        persisted = 0
+        async def _save_setups(s: AsyncSession) -> int:
+            persisted = 0
+            for item in setups:
+                record = TradeSetup(
+                    setup_id=item.setup_id,
+                    symbol=item.symbol,
+                    created_at=item.created_at,
+                    status=item.status.value if isinstance(item.status, SetupStatus) else item.status,
+                    setup_type=item.setup_type.value if isinstance(item.setup_type, SetupType) else item.setup_type,
+                    direction=item.direction.value if isinstance(item.direction, TradeDirection) else item.direction,
+                    timeframe=item.timeframe,
+                    entry_zone_min=item.entry_zone_min,
+                    entry_zone_max=item.entry_zone_max,
+                    stop_loss=item.stop_loss,
+                    target_1=item.target_1,
+                    target_2=item.target_2,
+                    target_3=item.target_3,
+                    risk_reward_ratio=item.risk_reward_ratio,
+                    expiration_time=item.expiration_time,
+                    invalidation_conditions=item.invalidation_conditions,
+                    supporting_evidence=item.supporting_evidence,
+                    estimated_fees_pct=item.estimated_fees_pct,
+                    methodology_version=item.methodology_version,
+                    active_stop_loss=item.active_stop_loss,
+                    breakeven_locked=item.breakeven_locked,
+                )
+                s.add(record)
+                persisted += 1
+            await s.commit()
+            return persisted
+
         try:
-            async with get_async_session() as session:
-                for s in setups:
-                    record = TradeSetup(
-                        setup_id=s.setup_id,
-                        symbol=s.symbol,
-                        created_at=s.created_at,
-                        status=s.status.value if isinstance(s.status, SetupStatus) else s.status,
-                        setup_type=s.setup_type.value if isinstance(s.setup_type, SetupType) else s.setup_type,
-                        direction=s.direction.value if isinstance(s.direction, TradeDirection) else s.direction,
-                        timeframe=s.timeframe,
-                        entry_zone_min=s.entry_zone_min,
-                        entry_zone_max=s.entry_zone_max,
-                        stop_loss=s.stop_loss,
-                        target_1=s.target_1,
-                        target_2=s.target_2,
-                        target_3=s.target_3,
-                        risk_reward_ratio=s.risk_reward_ratio,
-                        expiration_time=s.expiration_time,
-                        invalidation_conditions=s.invalidation_conditions,
-                        supporting_evidence=s.supporting_evidence,
-                        estimated_fees_pct=s.estimated_fees_pct,
-                        methodology_version=s.methodology_version,
-                        active_stop_loss=s.active_stop_loss,
-                        breakeven_locked=s.breakeven_locked,
-                    )
-                    session.add(record)
-                    persisted += 1
-                await session.commit()
+            if session:
+                return await _save_setups(session)
+            async with get_async_session() as s:
+                return await _save_setups(s)
         except SQLAlchemyError as exc:
             logger.error("Failed to persist TradeSetups: %s", exc)
-
-        return persisted
+            return 0
 
     @classmethod
     async def get_or_compute_latest_analysis(
@@ -251,7 +267,7 @@ class DecisionOrchestrator:
         sym_key = symbol.upper()
         now_mono = time.monotonic()
         mem_cached = cls._live_analysis_cache.get(sym_key)
-        if mem_cached and (now_mono - mem_cached[0] < min(3.0, float(max_age_seconds))):
+        if mem_cached and (now_mono - mem_cached[0] < min(10.0, float(max_age_seconds))):
             cached_copy = dict(mem_cached[1])
             cached_copy["source"] = "CACHE"
             return cached_copy
@@ -301,7 +317,7 @@ class DecisionOrchestrator:
                 return res_cache
 
         # Fallback path: compute live and persist
-        assessment, _ = await cls.run_current_pipeline(symbol=symbol, persist=True)
+        assessment, _ = await cls.run_current_pipeline(symbol=symbol, persist=True, session=session)
         res_computed = {
             "symbol": assessment.symbol,
             "assessment_time": assessment.assessment_time.isoformat(),
@@ -394,7 +410,7 @@ class DecisionOrchestrator:
         sym_key = symbol.upper()
         now_mono = time.monotonic()
         mem_cached = cls._live_setups_cache.get(sym_key)
-        if mem_cached and (now_mono - mem_cached[0] < min(3.0, float(max_age_minutes * 60))):
+        if mem_cached and (now_mono - mem_cached[0] < min(10.0, float(max_age_minutes * 60))):
             cached_copy = dict(mem_cached[1])
             cached_copy["source"] = "CACHE"
             return cached_copy
@@ -457,7 +473,7 @@ class DecisionOrchestrator:
                 return res_cache
 
         # Fallback path: execute live pipeline and persist
-        assessment, setups = await cls.run_current_pipeline(symbol=symbol, persist=True)
+        assessment, setups = await cls.run_current_pipeline(symbol=symbol, persist=True, session=session)
         if isinstance(setups, NoSetupResponse):
             res_no_setup = {
                 "symbol": sym_key,

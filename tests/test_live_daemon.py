@@ -50,3 +50,17 @@ async def test_live_daemon_start_and_stop():
 
     assert daemon.is_running is False
     assert daemon.client.stop.called
+
+
+def test_live_daemon_environment_aware_ws_url():
+    """Verify daemon selects testnet WS in development without proxy."""
+    with patch("backend.data.live_daemon.settings.ENVIRONMENT", "development"), \
+         patch("backend.data.live_daemon.settings.OUTBOUND_PROXY_URL", None):
+        daemon_dev = LiveIngestionDaemon()
+        assert "testnet" in daemon_dev.client.base_url or "binancefuture" in daemon_dev.client.base_url
+
+    with patch("backend.data.live_daemon.settings.ENVIRONMENT", "production"), \
+         patch("backend.data.live_daemon.settings.OUTBOUND_PROXY_URL", None):
+        daemon_prod = LiveIngestionDaemon()
+        assert "fstream.binance.com" in daemon_prod.client.base_url
+

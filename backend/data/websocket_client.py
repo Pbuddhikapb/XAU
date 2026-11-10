@@ -53,6 +53,14 @@ class BinanceWebSocketClient:
             "top_cluster_ask": 0.0,
         }
 
+        # Market state snapshot persistence throttling (every 1.0s)
+        self._last_state_persist_time = 0.0
+        self.state_persist_interval_sec = 1.0
+
+        # Session tracker evaluation throttling (10s TTL)
+        self._last_session_eval_time = 0.0
+        self._cached_session_state: str = "REGULAR"
+
         # In-memory latest state buffer
         self.current_state: dict[str, Any] = {
             "symbol": settings.SYMBOL.upper(),
@@ -89,8 +97,14 @@ class BinanceWebSocketClient:
             data = payload.get("data", {})
 
             now = datetime.now(UTC)
+            current_epoch = now.timestamp()
             self.current_state["last_update"] = now
-            self.current_state["tradfi_session_state"] = SessionTracker.get_session_state(now).value
+
+            # Throttled session evaluation (every 10s)
+            if current_epoch - self._last_session_eval_time >= 10.0:
+                self._last_session_eval_time = current_epoch
+                self._cached_session_state = SessionTracker.get_session_state(now).value
+            self.current_state["tradfi_session_state"] = self._cached_session_state
 
             if "kline_1m" in stream_name:
                 k = data.get("k", {})
@@ -166,6 +180,14 @@ class BinanceWebSocketClient:
                 res = self.on_state_update(self.current_state)
                 if asyncio.iscoroutine(res):
                     await res
+
+            # Throttled live market state persistence (every 1.0s)
+            if (
+                current_epoch - self._last_state_persist_time >= self.state_persist_interval_sec
+                and float(self.current_state.get("last_price") or 0.0) > 0
+            ):
+                self._last_state_persist_time = current_epoch
+                asyncio.create_task(self.persist_state_snapshot())
 
         except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
             logger.error("Error processing stream message: %s", e)

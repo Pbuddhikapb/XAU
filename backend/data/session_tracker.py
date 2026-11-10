@@ -100,9 +100,11 @@ def get_cme_holiday_or_early_close(ny_dt: datetime) -> tuple[TradFiSessionState,
     cur_time = ny_dt.time()
     year = cal_date.year
 
-    # 1. New Year's Day (Jan 1)
+    # 1. New Year's Day (Jan 1) - If Jan 1 is Sunday, observed Monday Jan 2 is closed
     if cal_date.month == 1 and cal_date.day == 1:
         return TradFiSessionState.NO_TRADING, "CME Holiday: New Year's Day (Closed full day)"
+    if cal_date.month == 1 and cal_date.day == 2 and cal_date.weekday() == 0:
+        return TradFiSessionState.NO_TRADING, "CME Holiday: New Year's Day Observed (Closed full day)"
 
     # 2. Martin Luther King Jr. Day (3rd Monday in January) - Early close 14:30 ET
     if cal_date.month == 1 and cal_date.weekday() == 0 and 15 <= cal_date.day <= 21:
@@ -130,11 +132,14 @@ def get_cme_holiday_or_early_close(ny_dt: datetime) -> tuple[TradFiSessionState,
             return TradFiSessionState.NO_TRADING, "CME Early Close: Juneteenth (Closed at 14:30 ET)"
 
     # 7. US Independence Day (July 4) - Early close July 3 / July 4 at 13:00 ET
+    # If July 4 is Sunday, observed on Monday July 5
     if cal_date.month == 7 and cal_date.day == 3 and cal_date.weekday() < 5:
         if cur_time >= time(13, 0):
             return TradFiSessionState.NO_TRADING, "CME Early Close: Pre-Independence Day (Closed at 13:00 ET)"
     if cal_date.month == 7 and cal_date.day == 4:
         return TradFiSessionState.NO_TRADING, "CME Holiday: Independence Day (Closed full day)"
+    if cal_date.month == 7 and cal_date.day == 5 and cal_date.weekday() == 0:
+        return TradFiSessionState.NO_TRADING, "CME Holiday: Independence Day Observed (Closed full day)"
 
     # 8. Labor Day (1st Monday in September) - Early close 14:30 ET
     if cal_date.month == 9 and cal_date.weekday() == 0 and cal_date.day <= 7:
@@ -150,11 +155,14 @@ def get_cme_holiday_or_early_close(ny_dt: datetime) -> tuple[TradFiSessionState,
             return TradFiSessionState.NO_TRADING, "CME Early Close: Black Friday (Closed at 13:45 ET)"
 
     # 10. Christmas Eve (Dec 24) early close 13:45 ET; Christmas Day (Dec 25) closed
+    # If Dec 25 is Sunday, observed on Monday Dec 26
     if cal_date.month == 12 and cal_date.day == 24 and cal_date.weekday() < 5:
         if cur_time >= time(13, 45):
             return TradFiSessionState.NO_TRADING, "CME Early Close: Christmas Eve (Closed at 13:45 ET)"
     if cal_date.month == 12 and cal_date.day == 25:
         return TradFiSessionState.NO_TRADING, "CME Holiday: Christmas Day (Closed full day)"
+    if cal_date.month == 12 and cal_date.day == 26 and cal_date.weekday() == 0:
+        return TradFiSessionState.NO_TRADING, "CME Holiday: Christmas Day Observed (Closed full day)"
 
     return None
 
@@ -200,7 +208,7 @@ class FallbackScheduleProvider(ScheduleProvider):
         holiday_check = get_cme_holiday_or_early_close(ny_dt)
         if holiday_check is not None:
             state, reason = holiday_check
-            logger.warning("CME calendar fallback evaluated holiday condition: %s at %s", reason, dt.isoformat())
+            logger.debug("CME calendar fallback evaluated holiday condition: %s at %s", reason, dt.isoformat())
             return SessionStateResult(
                 state=state,
                 source="fallback_cme_calendar",
@@ -520,7 +528,7 @@ class BinanceScheduleProvider(ScheduleProvider):
                 )
 
         # Date falls outside parsed intervals
-        logger.warning(
+        logger.debug(
             "Timestamp %s falls outside scheduled intervals. Falling back to CME ET calendar.",
             dt.isoformat(),
         )

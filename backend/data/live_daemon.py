@@ -32,8 +32,13 @@ class LiveIngestionDaemon:
     """Standalone live market data supervisor maintaining continuous data flow into PostgreSQL."""
 
     def __init__(self) -> None:
+        ws_url = (
+            settings.BINANCE_FUTURES_WS_URL
+            if (settings.ENVIRONMENT == "production" or settings.OUTBOUND_PROXY_URL)
+            else settings.BINANCE_TESTNET_WS_URL
+        )
         self.client = BinanceWebSocketClient(
-            base_ws_url=settings.BINANCE_FUTURES_WS_URL,
+            base_ws_url=ws_url,
             on_candle_close=self.handle_candle_close,
             on_state_update=self.handle_state_update,
         )
@@ -52,8 +57,17 @@ class LiveIngestionDaemon:
         Persists 1m candle into PostgreSQL and resamples higher timeframes.
         """
         try:
-            open_dt = datetime.fromtimestamp(candle_data["open_time"] / 1000, tz=UTC)
-            close_dt = datetime.fromtimestamp(candle_data["close_time"] / 1000, tz=UTC)
+            ot = candle_data["open_time"]
+            if isinstance(ot, datetime):
+                open_dt = ot if ot.tzinfo else ot.replace(tzinfo=UTC)
+            else:
+                open_dt = datetime.fromtimestamp(float(ot) / 1000, tz=UTC)
+
+            ct = candle_data["close_time"]
+            if isinstance(ct, datetime):
+                close_dt = ct if ct.tzinfo else ct.replace(tzinfo=UTC)
+            else:
+                close_dt = datetime.fromtimestamp(float(ct) / 1000, tz=UTC)
 
             # 1. Upsert 1m candle
             async with get_async_session() as session:
@@ -72,6 +86,7 @@ class LiveIngestionDaemon:
                     taker_buy_quote_volume=candle_data.get("taker_buy_quote_volume", 0.0),
                     close_time=close_dt,
                     is_confirmed=True,
+                    source=candle_data.get("source", "binance_websocket"),
                 )
                 stmt = stmt.on_conflict_do_update(
                     index_elements=["symbol", "timeframe", "open_time"],
@@ -87,6 +102,7 @@ class LiveIngestionDaemon:
                         "taker_buy_quote_volume": stmt.excluded.taker_buy_quote_volume,
                         "close_time": stmt.excluded.close_time,
                         "is_confirmed": True,
+                        "source": stmt.excluded.source,
                     },
                 )
                 await session.execute(stmt)
@@ -134,49 +150,57 @@ class LiveIngestionDaemon:
             ]
         )
 
+        # Collect statements to upsert across all timeframes in a single batched transaction
+        upsert_stmts = []
         for tf in ["5m", "15m", "1h", "4h", "1d", "1d_cme"]:
             try:
                 resampled = CandleResampler.resample_ohlcv(df_1m, target_timeframe=tf, symbol=settings.SYMBOL)
                 if not resampled.empty:
-                    # Write the latest completed bar
                     latest_bar = resampled.iloc[-1]
-                    async with get_async_session() as session:
-                        up_stmt = insert(OHLCVCandle).values(
-                            symbol=settings.SYMBOL,
-                            timeframe=tf,
-                            open_time=latest_bar["open_time"],
-                            open=latest_bar["open"],
-                            high=latest_bar["high"],
-                            low=latest_bar["low"],
-                            close=latest_bar["close"],
-                            volume=latest_bar["volume"],
-                            quote_volume=latest_bar.get("quote_volume", 0.0),
-                            trades_count=int(latest_bar.get("trades_count", 0)),
-                            taker_buy_volume=latest_bar.get("taker_buy_volume", 0.0),
-                            taker_buy_quote_volume=latest_bar.get("taker_buy_quote_volume", 0.0),
-                            close_time=latest_bar["close_time"],
-                            is_confirmed=True,
-                        )
-                        up_stmt = up_stmt.on_conflict_do_update(
-                            index_elements=["symbol", "timeframe", "open_time"],
-                            set_={
-                                "open": up_stmt.excluded.open,
-                                "high": up_stmt.excluded.high,
-                                "low": up_stmt.excluded.low,
-                                "close": up_stmt.excluded.close,
-                                "volume": up_stmt.excluded.volume,
-                                "quote_volume": up_stmt.excluded.quote_volume,
-                                "trades_count": up_stmt.excluded.trades_count,
-                                "taker_buy_volume": up_stmt.excluded.taker_buy_volume,
-                                "taker_buy_quote_volume": up_stmt.excluded.taker_buy_quote_volume,
-                                "close_time": up_stmt.excluded.close_time,
-                                "is_confirmed": True,
-                            },
-                        )
-                        await session.execute(up_stmt)
-                        await session.commit()
+                    up_stmt = insert(OHLCVCandle).values(
+                        symbol=settings.SYMBOL,
+                        timeframe=tf,
+                        open_time=latest_bar["open_time"],
+                        open=latest_bar["open"],
+                        high=latest_bar["high"],
+                        low=latest_bar["low"],
+                        close=latest_bar["close"],
+                        volume=latest_bar["volume"],
+                        quote_volume=latest_bar.get("quote_volume", 0.0),
+                        trades_count=int(latest_bar.get("trades_count", 0)),
+                        taker_buy_volume=latest_bar.get("taker_buy_volume", 0.0),
+                        taker_buy_quote_volume=latest_bar.get("taker_buy_quote_volume", 0.0),
+                        close_time=latest_bar["close_time"],
+                        is_confirmed=True,
+                    )
+                    up_stmt = up_stmt.on_conflict_do_update(
+                        index_elements=["symbol", "timeframe", "open_time"],
+                        set_={
+                            "open": up_stmt.excluded.open,
+                            "high": up_stmt.excluded.high,
+                            "low": up_stmt.excluded.low,
+                            "close": up_stmt.excluded.close,
+                            "volume": up_stmt.excluded.volume,
+                            "quote_volume": up_stmt.excluded.quote_volume,
+                            "trades_count": up_stmt.excluded.trades_count,
+                            "taker_buy_volume": up_stmt.excluded.taker_buy_volume,
+                            "taker_buy_quote_volume": up_stmt.excluded.taker_buy_quote_volume,
+                            "close_time": up_stmt.excluded.close_time,
+                            "is_confirmed": True,
+                        },
+                    )
+                    upsert_stmts.append(up_stmt)
             except (SQLAlchemyError, ValueError, OSError) as e:
                 logger.warning(f"Error updating resampled timeframe {tf}: {e}")
+
+        if upsert_stmts:
+            try:
+                async with get_async_session() as session:
+                    for up_s in upsert_stmts:
+                        await session.execute(up_s)
+                    await session.commit()
+            except SQLAlchemyError as e:
+                logger.error(f"Error persisting resampled timeframe batch: {e}")
 
     async def _gap_checker_loop(self, interval_seconds: float = 300.0) -> None:
         """Periodic background reconciler checking for missed bars via REST API."""
@@ -187,14 +211,18 @@ class LiveIngestionDaemon:
                 # Download recent 1m candles from REST to reconcile any WebSocket drops
                 now_ms = int(datetime.now(UTC).timestamp() * 1000)
                 start_ms = now_ms - (60 * 60 * 1000)
-                df_recent = self.downloader.fetch_klines_rest(
+                df_recent = await asyncio.to_thread(
+                    self.downloader.fetch_klines_rest,
                     start_time_ms=start_ms,
                     end_time_ms=now_ms,
                     interval="1m",
                     limit=100,
                 )
                 if not df_recent.empty:
-                    inserted = self.downloader.bulk_insert_candles(df_recent)
+                    inserted = await asyncio.to_thread(
+                        self.downloader.bulk_insert_candles,
+                        df_recent
+                    )
                     logger.info(f"Reconciled {inserted} recent 1m bars via REST gap check.")
             except asyncio.CancelledError:
                 break

@@ -250,6 +250,18 @@ def test_cme_holidays_and_early_closes():
     assert res_tg_post.state == TradFiSessionState.NO_TRADING
     assert "Thanksgiving" in res_tg_post.details.get("reason", "")
 
+    # 4. Observed Christmas (Sunday Dec 25, 2022 -> Monday Dec 26 observed closure)
+    xmas_obs = datetime(2022, 12, 26, 17, 0, tzinfo=UTC)
+    res_xmas_obs = fallback.get_session_state(xmas_obs)
+    assert res_xmas_obs.state == TradFiSessionState.NO_TRADING
+    assert "Christmas Day Observed" in res_xmas_obs.details.get("reason", "")
+
+    # 5. Observed Independence Day (Sunday July 4, 2027 -> Monday July 5 observed closure)
+    july4_obs = datetime(2027, 7, 5, 17, 0, tzinfo=UTC)
+    res_july4_obs = fallback.get_session_state(july4_obs)
+    assert res_july4_obs.state == TradFiSessionState.NO_TRADING
+    assert "Independence Day Observed" in res_july4_obs.details.get("reason", "")
+
 
 def test_binance_schedule_poller_and_caching(tmp_path):
     """Verify BinanceSchedulePoller caching to disk, handling errors, and fallback to ET calendar."""

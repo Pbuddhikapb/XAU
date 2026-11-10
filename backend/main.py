@@ -154,7 +154,7 @@ async def get_market_overview(session: AsyncSession = Depends(get_db_session)) -
     else:
         c_stmt = (
             select(OHLCVCandle)
-            .where(OHLCVCandle.symbol == settings.SYMBOL)
+            .where(OHLCVCandle.symbol == settings.SYMBOL, OHLCVCandle.timeframe == "1m")
             .order_by(OHLCVCandle.open_time.desc())
             .limit(1)
         )

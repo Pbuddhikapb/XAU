@@ -50,7 +50,7 @@ class BacktestRunner:
         )
 
         logger.info("Starting chronological walk-forward simulation...")
-        summary, trades, signals = engine.run(raw_candles)
+        summary, trades, signals = await asyncio.to_thread(engine.run, raw_candles)
 
         logger.info(
             "Backtest completed: %d trades (Win Rate: %.2f%%, Profit Factor: %.2f, Max DD: %.2f%%)",

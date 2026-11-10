@@ -46,3 +46,22 @@ async def test_websocket_client_receives_live_stream():
     assert latest["symbol"] == "XAUUSDT"
     assert latest["mark_price"] > 0 or latest["last_price"] > 0 or latest["best_bid"] > 0
     assert "imbalance_ratio" in client.current_depth
+
+
+@pytest.mark.asyncio
+async def test_websocket_client_throttling_logic():
+    """Verify session tracking and state persistence throttling intervals."""
+    from unittest.mock import AsyncMock
+
+    client = BinanceWebSocketClient()
+    client.persist_state_snapshot = AsyncMock()  # type: ignore[method-assign]
+
+    dummy_msg = '{"stream": "xauusdt@bookTicker", "data": {"b": "2700.1", "a": "2700.2"}}'
+
+    # Send 10 messages within same second
+    for _ in range(10):
+        await client._handle_message(dummy_msg)
+
+    # State snapshot should only be dispatched at most once within 1.0s interval
+    assert client.persist_state_snapshot.call_count <= 1
+

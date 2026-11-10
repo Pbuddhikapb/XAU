@@ -96,31 +96,31 @@ export const TopBar: React.FC<TopBarProps> = ({
                   priceFlash === "up" ? "text-bull-400" : priceFlash === "down" ? "text-bear-400" : "text-slate-100"
                 }`}
               >
-                ${lastPrice.toFixed(2)}
+                ${(lastPrice ?? 0).toFixed(2)}
               </span>
             </div>
 
             <div>
               <span className="text-slate-400 block text-[10px]">MARK</span>
-              <span className="text-slate-200">${markPrice.toFixed(2)}</span>
+              <span className="text-slate-200">${(markPrice ?? 0).toFixed(2)}</span>
             </div>
 
             <div>
               <span className="text-slate-400 block text-[10px]">INDEX</span>
-              <span className="text-slate-300">${indexPrice.toFixed(2)}</span>
+              <span className="text-slate-300">${(indexPrice ?? 0).toFixed(2)}</span>
             </div>
 
             <div className="hidden md:block">
               <span className="text-slate-400 block text-[10px]">BASIS</span>
-              <span className={basis >= 0 ? "text-bull-400" : "text-bear-400"}>
-                {basis >= 0 ? "+" : ""}
-                {basis.toFixed(2)}
+              <span className={(basis ?? 0) >= 0 ? "text-bull-400" : "text-bear-400"}>
+                {(basis ?? 0) >= 0 ? "+" : ""}
+                {(basis ?? 0).toFixed(2)}
               </span>
             </div>
 
             <div className="hidden md:block">
               <span className="text-slate-400 block text-[10px]">SPREAD</span>
-              <span className="text-slate-200">${spread.toFixed(2)}</span>
+              <span className="text-slate-200">${(spread ?? 0).toFixed(2)}</span>
             </div>
           </div>
         </div>
@@ -130,8 +130,8 @@ export const TopBar: React.FC<TopBarProps> = ({
           <div className="flex items-center gap-1.5 bg-card px-2.5 py-1 rounded border border-border">
             <Clock className="w-3.5 h-3.5 text-gold-400" />
             <span className="text-slate-400 text-[10px]">FUNDING (8H):</span>
-            <span className={fundingRate >= 0 ? "text-bull-400 font-medium" : "text-bear-400 font-medium"}>
-              {(fundingRate * 100).toFixed(4)}%
+            <span className={(fundingRate ?? 0) >= 0 ? "text-bull-400 font-medium" : "text-bear-400 font-medium"}>
+              {((fundingRate ?? 0) * 100).toFixed(4)}%
             </span>
             <span className="text-slate-500 text-[11px] ml-1">in {fundingCountdown}</span>
           </div>

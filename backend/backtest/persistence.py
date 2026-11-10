@@ -209,7 +209,68 @@ class BacktestPersistence:
             return None
 
         run, metric = row
+        strat_cfg = run.strategy_config or {}
+        in_sample_m = strat_cfg.get("in_sample_metrics", {})
+        out_sample_m = strat_cfg.get("out_of_sample_metrics", {})
+        initial_cap = float(strat_cfg.get("initial_capital", 10000.0))
+
+        win_rate = float(metric.win_rate) if metric else 0.0
+        profit_factor = float(metric.profit_factor) if metric else 0.0
+        expectancy = float(metric.expectancy) if metric else 0.0
+        max_dd = float(metric.max_drawdown) if metric else 0.0
+        sharpe = float(metric.sharpe_ratio) if metric and metric.sharpe_ratio is not None else None
+        total_t = metric.total_trades if metric else 0
+
+        net_pnl = float(out_sample_m.get("net_pnl_usd", 0.0))
+        net_pnl_pct = (net_pnl / initial_cap) * 100.0 if initial_cap > 0 else 0.0
+        winning_t = int(out_sample_m.get("winning_trades", 0))
+        losing_t = int(out_sample_m.get("losing_trades", 0))
+
+        metrics_payload = {
+            "total_trades": total_t,
+            "win_rate": win_rate,
+            "win_rate_pct": win_rate,
+            "profit_factor": profit_factor,
+            "expectancy": expectancy,
+            "expectancy_dollars": expectancy,
+            "expectancy_r": expectancy,
+            "max_drawdown": max_dd,
+            "max_drawdown_pct": max_dd,
+            "max_drawdown_dollars": max_dd * (initial_cap / 100.0),
+            "sharpe_ratio": sharpe,
+            "net_pnl_dollars": net_pnl,
+            "net_pnl_pct": net_pnl_pct,
+            "winning_trades": winning_t,
+            "losing_trades": losing_t,
+            "breakeven_trades": max(0, total_t - winning_t - losing_t),
+            "precision": float(metric.precision) if metric else 0.0,
+            "recall": float(metric.recall) if metric else 0.0,
+            "long_win_rate": float(metric.long_win_rate) if metric else 0.0,
+            "short_win_rate": float(metric.short_win_rate) if metric else 0.0,
+            "metrics_by_timeframe": metric.metrics_by_timeframe if metric else {},
+            "metrics_by_regime": metric.metrics_by_regime if metric else {},
+            "in_sample_metrics": in_sample_m,
+            "out_of_sample_metrics": out_sample_m,
+            "performance_degradation_pct": 0.0,
+        }
+
+        run_payload = {
+            "run_id": str(run.run_id),
+            "name": run.name,
+            "symbol": "XAUUSDT",
+            "start_time": run.start_time.isoformat(),
+            "end_time": run.end_time.isoformat(),
+            "in_sample_end": run.in_sample_end.isoformat() if run.in_sample_end else None,
+            "timeframes": run.timeframes,
+            "strategy_config": run.strategy_config,
+            "trading_costs_config": run.trading_costs_config,
+            "methodology_version": run.methodology_version,
+            "executed_at": run.executed_at.isoformat(),
+            "initial_balance": initial_cap,
+        }
+
         return {
+            "run": run_payload,
             "run_id": str(run.run_id),
             "name": run.name,
             "start_time": run.start_time.isoformat(),
@@ -220,20 +281,9 @@ class BacktestPersistence:
             "trading_costs_config": run.trading_costs_config,
             "methodology_version": run.methodology_version,
             "executed_at": run.executed_at.isoformat(),
-            "metrics": {
-                "total_trades": metric.total_trades if metric else 0,
-                "win_rate": float(metric.win_rate) if metric else 0.0,
-                "profit_factor": float(metric.profit_factor) if metric else 0.0,
-                "expectancy": float(metric.expectancy) if metric else 0.0,
-                "max_drawdown": float(metric.max_drawdown) if metric else 0.0,
-                "sharpe_ratio": float(metric.sharpe_ratio) if metric and metric.sharpe_ratio is not None else None,
-                "precision": float(metric.precision) if metric else 0.0,
-                "recall": float(metric.recall) if metric else 0.0,
-                "long_win_rate": float(metric.long_win_rate) if metric else 0.0,
-                "short_win_rate": float(metric.short_win_rate) if metric else 0.0,
-                "metrics_by_timeframe": metric.metrics_by_timeframe if metric else {},
-                "metrics_by_regime": metric.metrics_by_regime if metric else {},
-            },
+            "metrics": metrics_payload,
+            "trades": [],
+            "horizon_evaluations": {},
         }
 
     @classmethod

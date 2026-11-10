@@ -46,17 +46,17 @@ export const SignalHistoryView: React.FC = () => {
         </div>
         <div className="bg-surface border border-border p-3 rounded-lg shadow">
           <div className="text-slate-400 text-[10px] uppercase">FAVORABLE-FIRST ACCURACY</div>
-          <div className={`text-xl font-bold ${favorablePct >= 50 ? "text-bull-400" : "text-bear-400"}`}>
-            {favorablePct.toFixed(1)}%
+          <div className={`text-xl font-bold ${(favorablePct ?? 0) >= 50 ? "text-bull-400" : "text-bear-400"}`}>
+            {(favorablePct ?? 0).toFixed(1)}%
           </div>
         </div>
         <div className="bg-surface border border-border p-3 rounded-lg shadow">
           <div className="text-slate-400 text-[10px] uppercase">AVG MFE (FAVORABLE EXCURSION)</div>
-          <div className="text-xl font-bold text-bull-400">+{avgMfe.toFixed(2)} pts</div>
+          <div className="text-xl font-bold text-bull-400">+{(avgMfe ?? 0).toFixed(2)} pts</div>
         </div>
         <div className="bg-surface border border-border p-3 rounded-lg shadow">
           <div className="text-slate-400 text-[10px] uppercase">AVG MAE (ADVERSE EXCURSION)</div>
-          <div className="text-xl font-bold text-bear-400">-{avgMae.toFixed(2)} pts</div>
+          <div className="text-xl font-bold text-bear-400">-{(avgMae ?? 0).toFixed(2)} pts</div>
         </div>
       </div>
 
@@ -156,12 +156,12 @@ export const SignalHistoryView: React.FC = () => {
                       </span>
                     </td>
                     <td className="p-2.5 font-bold text-slate-200">
-                      {s.direction_score.toFixed(0)}
+                      {(s.direction_score ?? 0).toFixed(0)}
                     </td>
                     <td className="p-2.5 text-gold-400 font-semibold">{s.horizon_candles} bars</td>
-                    <td className="p-2.5 text-slate-300">${s.initial_price.toFixed(2)}</td>
-                    <td className="p-2.5 text-bull-400 font-bold">+{s.mfe_points.toFixed(2)}</td>
-                    <td className="p-2.5 text-bear-400 font-bold">-{s.mae_points.toFixed(2)}</td>
+                    <td className="p-2.5 text-slate-300">${(s.initial_price ?? 0).toFixed(2)}</td>
+                    <td className="p-2.5 text-bull-400 font-bold">+{(s.mfe_points ?? 0).toFixed(2)}</td>
+                    <td className="p-2.5 text-bear-400 font-bold">-{(s.mae_points ?? 0).toFixed(2)}</td>
                     <td className="p-2.5">
                       <span
                         className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${

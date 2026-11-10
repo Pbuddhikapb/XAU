@@ -216,7 +216,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
               position: isHigh ? "aboveBar" : "belowBar",
               color: isHigh ? "#f59e0b" : "#3b82f6",
               shape: isHigh ? "arrowDown" : "arrowUp",
-              text: `Sweep $${ev.price.toFixed(1)}`,
+              text: `Sweep $${(Number(ev.price) || 0).toFixed(1)}`,
             });
           }
         } catch {}

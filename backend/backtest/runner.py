@@ -70,6 +70,14 @@ class BacktestRunner:
 
         return {
             "run_id": str(summary.run_id),
+            "run": {
+                "run_id": str(summary.run_id),
+                "name": config.name,
+                "symbol": config.symbol,
+                "start_time": config.start_time.isoformat() if config.start_time else None,
+                "end_time": config.end_time.isoformat() if config.end_time else None,
+                "initial_balance": config.initial_capital,
+            },
             "name": config.name,
             "symbol": config.symbol,
             "total_trades": summary.total_trades,

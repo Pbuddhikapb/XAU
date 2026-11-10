@@ -96,7 +96,10 @@ export const api = {
     const res = await fetch(`${API_BASE}/api/v1/backtests/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        ...payload,
+        initial_capital: payload.initial_balance,
+      }),
     });
     return handleResponse<BacktestRunDetail>(res);
   },

@@ -19,6 +19,7 @@ from sqlalchemy import (
     PrimaryKeyConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
 from backend.database import Base
@@ -290,6 +291,8 @@ class BacktestRun(Base):
     trading_costs_config = Column(JSONB, nullable=False)
     methodology_version = Column(VARCHAR(20), nullable=False)
     executed_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    metric = relationship("BacktestMetric", backref="run", uselist=False, cascade="all, delete-orphan")
 
 
 class BacktestMetric(Base):

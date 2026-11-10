@@ -71,6 +71,7 @@ class BacktestPersistence:
                 executed_at=now,
             )
             s.add(run_record)
+            await s.flush()
 
             metric_record = BacktestMetric(
                 run_id=metrics.run_id,
@@ -88,6 +89,7 @@ class BacktestPersistence:
                 metrics_by_regime=metrics.metrics_by_regime,
             )
             s.add(metric_record)
+            await s.flush()
             await s.commit()
             return metrics.run_id
 
@@ -98,6 +100,8 @@ class BacktestPersistence:
                 return await _do_save(s)
         except SQLAlchemyError as exc:
             logger.error("Failed to save backtest run to PostgreSQL: %s", exc)
+            if session:
+                await session.rollback()
             return metrics.run_id
 
     @classmethod
@@ -125,6 +129,7 @@ class BacktestPersistence:
                 )
                 s.add(outcome_rec)
                 saved += 1
+            await s.flush()
             await s.commit()
             return saved
 
@@ -135,6 +140,8 @@ class BacktestPersistence:
                 return await _do_save_signals(s)
         except SQLAlchemyError as exc:
             logger.error("Failed to save signal outcomes: %s", exc)
+            if session:
+                await session.rollback()
             return 0
 
     @classmethod

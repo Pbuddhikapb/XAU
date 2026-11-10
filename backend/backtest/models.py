@@ -151,5 +151,12 @@ class BacktestRunRequest(BaseModel):
     end_time: datetime | None = Field(default=None, description="End time for backtest window")
     in_sample_ratio: float = Field(default=0.70, ge=0.1, le=0.9, description="In-sample data ratio")
     walk_forward_folds: int = Field(default=3, ge=1, le=10, description="Number of walk-forward rolling folds")
-    initial_capital: float = Field(default=100_000.0, ge=1000.0, description="Starting equity USD")
+    initial_capital: float = Field(default=100_000.0, ge=10.0, description="Starting equity USD")
+    initial_balance: float | None = Field(default=None, description="Alias for initial_capital")
     risk_per_trade_pct: float = Field(default=0.01, ge=0.001, le=0.05, description="Equity risk per trade")
+
+    model_config = {"extra": "ignore"}
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.initial_balance is not None:
+            self.initial_capital = self.initial_balance

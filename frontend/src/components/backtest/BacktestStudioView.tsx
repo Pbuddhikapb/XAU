@@ -145,7 +145,7 @@ export const BacktestStudioView: React.FC = () => {
       });
       setShowLauncher(false);
       await loadRuns();
-      setSelectedRunId(res.run.run_id);
+      setSelectedRunId(res?.run?.run_id || (res as any)?.run_id);
     } catch (err: any) {
       alert(`Backtest execution error: ${err.message}`);
     } finally {

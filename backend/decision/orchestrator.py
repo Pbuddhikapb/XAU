@@ -25,6 +25,7 @@ from backend.database import get_async_session
 from backend.decision.models import (
     DirectionAssessment,
     DirectionType,
+    MarketRegime,
     NoSetupResponse,
     SetupStatus,
     SetupType,
@@ -33,7 +34,7 @@ from backend.decision.models import (
 )
 from backend.decision.scoring_engine import DirectionalScoringEngine
 from backend.decision.setup_engine import TradeSetupEngine
-from backend.models.tables import MarketAnalysis, OHLCVCandle, TradeSetup
+from backend.models.tables import LiveMarketState, MarketAnalysis, OHLCVCandle, TradeSetup
 from backend.structure.structure_engine import StructureEngine
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,8 @@ class DecisionOrchestrator:
         as_of_time: datetime | None = None,
         is_live: bool = True,
         require_completed_candles: bool = True,
+        basis: float | None = None,
+        prev_regime: MarketRegime | None = None,
     ) -> tuple[DirectionAssessment, list[TradeSetupModel] | NoSetupResponse]:
         """
         Pure calculation pipeline:
@@ -97,6 +100,8 @@ class DecisionOrchestrator:
             session_is_active=session_active,
             assessment_time=as_of_time,
             is_live=is_live,
+            basis=basis,
+            prev_regime=prev_regime,
         )
 
         # 4. Engine B: Trade Setup Identification
@@ -120,8 +125,20 @@ class DecisionOrchestrator:
         """
         timeframes = settings.PRIMARY_TIMEFRAMES
         raw_candles: dict[str, pd.DataFrame] = {}
+        latest_basis: float | None = None
 
         async def _query_candles(s: AsyncSession) -> None:
+            nonlocal latest_basis
+            try:
+                state_res = await s.execute(
+                    select(LiveMarketState.basis).where(LiveMarketState.symbol == symbol.upper()).limit(1)
+                )
+                b = state_res.scalar_one_or_none()
+                if b is not None:
+                    latest_basis = float(b)
+            except (SQLAlchemyError, OSError):
+                pass
+
             for tf in timeframes:
                 stmt = (
                     select(OHLCVCandle)
@@ -165,6 +182,7 @@ class DecisionOrchestrator:
             symbol=symbol,
             as_of_time=datetime.now(UTC),
             is_live=True,
+            basis=latest_basis,
         )
 
         if persist:

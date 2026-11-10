@@ -51,11 +51,24 @@ class Settings(BaseSettings):
     # CME Session Day (18:00 ET to 17:00 ET) 1D aggregation alongside UTC 1D candle
     ENABLE_CME_SESSION_DAILY_CANDLES: bool = True
 
-    # Phase 4: Decision Engine Architecture (Section 7 of Spec & Section 16 of Audit)
-    DECISION_METHODOLOGY_VERSION: str = "v1.1.0-phase4"
+    # Phase 8: Institutional Decision Enhancements & Tail-Risk Defenses
+    DECISION_METHODOLOGY_VERSION: str = "v1.2.0-phase8"
     DATA_QUALITY_MIN_SCORE: float = 70.0
 
-    # Engine A: Scoring Weights (Initial configurable parameters summing to 100 max pts)
+    # Macro Event Blackout Gatekeeper
+    NEWS_BLACKOUT_ENABLED: bool = True
+    NEWS_BLACKOUT_PRE_MINUTES: int = 15
+    NEWS_BLACKOUT_POST_MINUTES: int = 30
+
+    # Regime Classification & Hysteresis Thresholds
+    ADX_TREND_ENTRY_THRESHOLD: float = 25.0
+    ADX_TREND_EXIT_THRESHOLD: float = 20.0
+    VOLATILITY_EXPANSION_PERCENTILE: float = 85.0
+
+    # Basis Dislocation Threshold (in basis points: 25 bps = 0.25% of index price)
+    BASIS_EXTREME_BPS: float = 25.0
+
+    # Engine A: Scoring Weights (Default parameters)
     WEIGHT_STRUCTURE: float = 25.0
     WEIGHT_MTF_TREND: float = 20.0
     WEIGHT_MOMENTUM: float = 15.0

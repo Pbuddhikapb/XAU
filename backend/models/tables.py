@@ -145,6 +145,20 @@ class FundingHistory(Base):
     __table_args__ = (PrimaryKeyConstraint("symbol", "funding_time"),)
 
 
+class EconomicCalendarEvent(Base):
+    """Scheduled high-impact macroeconomic events (FOMC, NFP, CPI, PPI)."""
+
+    __tablename__ = "economic_calendar_events"
+
+    event_id = Column(VARCHAR(50), primary_key=True)
+    event_name = Column(VARCHAR(100), nullable=False)
+    country = Column(VARCHAR(10), nullable=False, default="USD")
+    scheduled_time = Column(DateTime(timezone=True), nullable=False, index=True)
+    impact = Column(VARCHAR(20), nullable=False, default="HIGH")
+
+    __table_args__ = (Index("idx_economic_event_time", "scheduled_time"),)
+
+
 class IndicatorSnapshot(Base):
     """Immutable calculation records for every confirmed candle close."""
 

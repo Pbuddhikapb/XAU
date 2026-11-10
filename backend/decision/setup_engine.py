@@ -26,6 +26,7 @@ import numpy as np
 import pandas as pd
 
 from backend.config import settings
+from backend.data.economic_calendar import EconomicCalendarProvider
 from backend.decision.models import (
     DirectionAssessment,
     DirectionType,
@@ -48,6 +49,23 @@ class TradeSetupEngine:
         if dir_val in ("POTENTIAL_BULLISH", "POTENTIAL_BEARISH"):
             return SetupStatus.POTENTIAL
         return SetupStatus.CONFIRMED
+
+    @staticmethod
+    def _calculate_dynamic_buffer_multiple(df_1h: pd.DataFrame, base_multiple: float = 0.5) -> float:
+        """
+        Scale buffer multiple inversely with historical volatility percentile.
+        During volatility compression (squeeze), expands buffer to avoid false wicks.
+        During volatility expansion, tightens buffer multiple to control absolute risk in dollars.
+        """
+        vp = 50.0
+        if (
+            not df_1h.empty
+            and "volatility_percentile" in df_1h.columns
+            and pd.notna(df_1h["volatility_percentile"].iloc[-1])
+        ):
+            vp = float(df_1h["volatility_percentile"].iloc[-1])
+        vol_factor = 0.70 + 0.60 * (1.0 - (vp / 100.0))
+        return round(base_multiple * vol_factor, 2)
 
     @staticmethod
     def _make_no_setup(
@@ -95,6 +113,13 @@ class TradeSetupEngine:
                 settings.DATA_QUALITY_MIN_SCORE,
             )
             return cls._make_no_setup("DATA_QUALITY_BELOW_THRESHOLD", symbol, as_of_time, assessment)
+
+        # Check high-impact macroeconomic event blackout window
+        if settings.NEWS_BLACKOUT_ENABLED:
+            is_blackout, blackout_reason = EconomicCalendarProvider.is_in_blackout_window(as_of_time)
+            if is_blackout:
+                logger.info("Inside economic news blackout window (%s): skipping setups", blackout_reason)
+                return cls._make_no_setup("HIGH_IMPACT_NEWS_BLACKOUT", symbol, as_of_time, assessment)
 
         if assessment.direction == DirectionType.NEUTRAL:
             # Range rejections can still be evaluated in NEUTRAL range regimes if data quality is high
@@ -200,12 +225,13 @@ class TradeSetupEngine:
         if not near_ema:
             return None
 
-        # Structure + ATR derived Stop Loss
+        # Structure + ATR derived Stop Loss (Dynamic Volatility Scaling)
+        buf_mult = cls._calculate_dynamic_buffer_multiple(df_1h, base_multiple=0.5)
         if trade_dir == TradeDirection.LONG:
             swing_low = float(df_1h["low"].tail(10).min())
-            sl_candidate = swing_low - 0.5 * atr
+            sl_candidate = swing_low - buf_mult * atr
             if not np.isnan(ema_50):
-                sl_candidate = min(ema_50 - 0.5 * atr, sl_candidate)
+                sl_candidate = min(ema_50 - buf_mult * atr, sl_candidate)
             stop_loss = round(sl_candidate, 2)
             entry_min = round(close - 0.25 * atr, 2)
             entry_max = round(close + 0.25 * atr, 2)
@@ -222,9 +248,9 @@ class TradeSetupEngine:
             inval_text = f"Invalidated if price closes below 1H EMA50 / Support at {stop_loss:.2f}."
         else:
             swing_high = float(df_1h["high"].tail(10).max())
-            sl_candidate = swing_high + 0.5 * atr
+            sl_candidate = swing_high + buf_mult * atr
             if not np.isnan(ema_50):
-                sl_candidate = max(ema_50 + 0.5 * atr, sl_candidate)
+                sl_candidate = max(ema_50 + buf_mult * atr, sl_candidate)
             stop_loss = round(sl_candidate, 2)
             entry_min = round(close - 0.25 * atr, 2)
             entry_max = round(close + 0.25 * atr, 2)
@@ -315,10 +341,11 @@ class TradeSetupEngine:
         if dist_to_bos > 1.2 * atr:
             return None
 
-        # Structure + ATR derived Stop Loss
+        # Structure + ATR derived Stop Loss (Dynamic Volatility Scaling)
+        buf_mult_bos = cls._calculate_dynamic_buffer_multiple(df_1h, base_multiple=0.75)
         if "BULLISH" in bos_type and close >= bos_price - 0.3 * atr:
             trade_dir = TradeDirection.LONG
-            stop_loss = round(bos_price - 0.75 * atr, 2)
+            stop_loss = round(bos_price - buf_mult_bos * atr, 2)
             entry_min = round(bos_price - 0.2 * atr, 2)
             entry_max = round(bos_price + 0.3 * atr, 2)
             entry_mid = (entry_min + entry_max) / 2.0
@@ -331,7 +358,7 @@ class TradeSetupEngine:
             inval_text = f"Invalidated if price closes below retest level at {stop_loss:.2f}."
         elif "BEARISH" in bos_type and close <= bos_price + 0.3 * atr:
             trade_dir = TradeDirection.SHORT
-            stop_loss = round(bos_price + 0.75 * atr, 2)
+            stop_loss = round(bos_price + buf_mult_bos * atr, 2)
             entry_min = round(bos_price - 0.3 * atr, 2)
             entry_max = round(bos_price + 0.2 * atr, 2)
             entry_mid = (entry_min + entry_max) / 2.0
@@ -403,10 +430,11 @@ class TradeSetupEngine:
         sweep_type = str(latest_sweep.get("sweep_type", "")).upper()
         extreme_price = float(latest_sweep.get("penetration_price", latest_sweep.get("extreme_price", close)))
 
-        # Structure + ATR derived Stop Loss
+        # Structure + ATR derived Stop Loss (Dynamic Volatility Scaling)
+        buf_mult_swp = cls._calculate_dynamic_buffer_multiple(df_1h, base_multiple=0.5)
         if "LOW" in sweep_type or "SUPPORT" in sweep_type or "BULLISH" in sweep_type:
             trade_dir = TradeDirection.LONG
-            stop_loss = round(extreme_price - 0.5 * atr, 2)
+            stop_loss = round(extreme_price - buf_mult_swp * atr, 2)
             entry_min = round(close - 0.25 * atr, 2)
             entry_max = round(close + 0.25 * atr, 2)
             entry_mid = close
@@ -419,7 +447,7 @@ class TradeSetupEngine:
             inval_text = f"Invalidated if price trades below sweep low at {stop_loss:.2f}."
         elif "HIGH" in sweep_type or "RESISTANCE" in sweep_type or "BEARISH" in sweep_type:
             trade_dir = TradeDirection.SHORT
-            stop_loss = round(extreme_price + 0.5 * atr, 2)
+            stop_loss = round(extreme_price + buf_mult_swp * atr, 2)
             entry_min = round(close - 0.25 * atr, 2)
             entry_max = round(close + 0.25 * atr, 2)
             entry_mid = close
@@ -496,10 +524,11 @@ class TradeSetupEngine:
             z_type = zone.get("zone_type", "")
 
             # If price is reacting inside or within 0.3 ATR of zone
+            buf_mult_range = cls._calculate_dynamic_buffer_multiple(df_1h, base_multiple=0.75)
             if z_min - 0.3 * atr <= close <= z_max + 0.3 * atr:
                 if z_type == "SUPPORT":
                     trade_dir = TradeDirection.LONG
-                    stop_loss = round(z_min - 0.75 * atr, 2)
+                    stop_loss = round(z_min - buf_mult_range * atr, 2)
                     entry_min = round(z_min, 2)
                     entry_max = round(close + 0.2 * atr, 2)
                     entry_mid = (entry_min + entry_max) / 2.0
@@ -512,7 +541,7 @@ class TradeSetupEngine:
                     inval_text = f"Invalidated if price closes below support boundary at {stop_loss:.2f}."
                 elif z_type == "RESISTANCE":
                     trade_dir = TradeDirection.SHORT
-                    stop_loss = round(z_max + 0.75 * atr, 2)
+                    stop_loss = round(z_max + buf_mult_range * atr, 2)
                     entry_min = round(close - 0.2 * atr, 2)
                     entry_max = round(z_max, 2)
                     entry_mid = (entry_min + entry_max) / 2.0

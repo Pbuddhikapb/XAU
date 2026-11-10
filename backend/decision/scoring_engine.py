@@ -43,6 +43,8 @@ class DirectionalScoringEngine:
         session_is_active: bool = True,
         assessment_time: datetime | None = None,
         is_live: bool = False,
+        basis: float | None = None,
+        prev_regime: MarketRegime | None = None,
     ) -> DirectionAssessment:
         """
         Evaluate directional bias from multi-timeframe indicator and structure data.
@@ -77,45 +79,69 @@ class DirectionalScoringEngine:
         df_1h = timeframe_data.get("1h", {}).get("df", pd.DataFrame())
         struct_1h = timeframe_data.get("1h", {}).get("structure", {})
 
+        # Stage 1: Determine baseline market regime with ADX hysteresis and volatility percentile
+        baseline_regime = cls._determine_baseline_regime(
+            df_1h=df_1h,
+            tf_data=timeframe_data,
+            session_is_active=session_is_active,
+            data_quality=data_quality,
+            prev_regime=prev_regime,
+        )
+
+        # Stage 2: Select adaptive weight matrix matching active regime
+        weights = cls._get_regime_weights(baseline_regime)
+
         # Raw factor evidence lists
         bull_evidence_pool: list[EvidenceItem] = []
         bear_evidence_pool: list[EvidenceItem] = []
 
-        # 3. Factor 1: Market Structure (Weight: settings.WEIGHT_STRUCTURE)
-        struct_bull, struct_bear, struct_ev = cls._score_market_structure(timeframe_data)
+        # 3. Factor 1: Market Structure (Weight: weights["weight_structure"])
+        struct_bull, struct_bear, struct_ev = cls._score_market_structure(
+            timeframe_data, max_wt=weights["weight_structure"]
+        )
         for e in struct_ev:
             (bull_evidence_pool if e.is_supporting else bear_evidence_pool).append(e)
 
-        # 4. Factor 2: Multi-Timeframe Trend (Weight: settings.WEIGHT_MTF_TREND)
-        trend_bull, trend_bear, trend_ev, tf_alignment = cls._score_mtf_trend(timeframe_data)
+        # 4. Factor 2: Multi-Timeframe Trend (Weight: weights["weight_mtf_trend"])
+        trend_bull, trend_bear, trend_ev, tf_alignment = cls._score_mtf_trend(
+            timeframe_data, max_wt=weights["weight_mtf_trend"]
+        )
         for e in trend_ev:
             (bull_evidence_pool if e.is_supporting else bear_evidence_pool).append(e)
 
-        # 5. Factor 3: Momentum (Weight: settings.WEIGHT_MOMENTUM)
-        mom_bull, mom_bear, mom_ev = cls._score_momentum(timeframe_data)
+        # 5. Factor 3: Momentum (Weight: weights["weight_momentum"])
+        mom_bull, mom_bear, mom_ev = cls._score_momentum(
+            timeframe_data, max_wt=weights["weight_momentum"]
+        )
         for e in mom_ev:
             (bull_evidence_pool if e.is_supporting else bear_evidence_pool).append(e)
 
-        # 6. Factor 4: Volume & Order Flow (Weight: settings.WEIGHT_VOLUME)
-        vol_bull, vol_bear, vol_ev = cls._score_volume(timeframe_data)
+        # 6. Factor 4: Volume & Order Flow (with Basis Dislocation, Weight: weights["weight_volume"])
+        vol_bull, vol_bear, vol_ev = cls._score_volume(
+            timeframe_data, max_wt=weights["weight_volume"], basis=basis
+        )
         for e in vol_ev:
             (bull_evidence_pool if e.is_supporting else bear_evidence_pool).append(e)
 
-        # 7. Factor 5: Volatility & Price Action (Weight: settings.WEIGHT_VOLATILITY_PA)
-        pa_bull, pa_bear, pa_ev = cls._score_volatility_pa(timeframe_data)
+        # 7. Factor 5: Volatility & Price Action (Weight: weights["weight_volatility_pa"])
+        pa_bull, pa_bear, pa_ev = cls._score_volatility_pa(
+            timeframe_data, max_wt=weights["weight_volatility_pa"]
+        )
         for e in pa_ev:
             (bull_evidence_pool if e.is_supporting else bear_evidence_pool).append(e)
 
-        # 8. Factor 6: Liquidity (Weight: settings.WEIGHT_LIQUIDITY)
-        liq_bull, liq_bear, liq_ev = cls._score_liquidity(timeframe_data)
+        # 8. Factor 6: Liquidity (Weight: weights["weight_liquidity"])
+        liq_bull, liq_bear, liq_ev = cls._score_liquidity(
+            timeframe_data, max_wt=weights["weight_liquidity"]
+        )
         for e in liq_ev:
             (bull_evidence_pool if e.is_supporting else bear_evidence_pool).append(e)
 
         # ---------------------------------------------------------------------
-        # Correlation-Aware Deduplication & Capping
+        # Correlation-Aware Deduplication & Capping (Adaptive to Regime)
         # ---------------------------------------------------------------------
-        # Group 1: Structure (25) + MTF Trend (20) collinearity cap
-        max_struct_trend = settings.MAX_STRUCTURE_TREND_COMBINED
+        # Group 1: Structure + MTF Trend collinearity cap
+        max_struct_trend = weights["max_struct_trend"]
         struct_trend_bull_raw = struct_bull + trend_bull
         struct_trend_bear_raw = struct_bear + trend_bear
         struct_trend_bull_dampened = min(struct_trend_bull_raw, max_struct_trend)
@@ -142,8 +168,8 @@ class DirectionalScoringEngine:
                 )
             )
 
-        # Group 2: Momentum (15) + Volatility/Price Action (15) collinearity cap
-        max_mom_pa = settings.MAX_MOMENTUM_PA_COMBINED
+        # Group 2: Momentum + Volatility/Price Action collinearity cap
+        max_mom_pa = weights["max_mom_pa"]
         mom_pa_bull_raw = mom_bull + pa_bull
         mom_pa_bear_raw = mom_bear + pa_bear
         mom_pa_bull_dampened = min(mom_pa_bull_raw, max_mom_pa)
@@ -204,7 +230,21 @@ class DirectionalScoringEngine:
             session_is_active=session_is_active,
             tf_alignment=tf_alignment,
             df_1h=df_1h,
+            baseline_regime=baseline_regime,
+            min_confirm_score=weights["min_confirm_score"],
         )
+
+        # Document active regime allocation for full transparency
+        regime_val = regime.value if isinstance(regime, MarketRegime) else regime
+        regime_desc = (
+            f"Active Regime: {regime_val} "
+            f"(Weights: Struct={weights['weight_structure']:.0f}%, "
+            f"Trend={weights['weight_mtf_trend']:.0f}%, Mom={weights['weight_momentum']:.0f}%, "
+            f"Vol={weights['weight_volume']:.0f}%, PA={weights['weight_volatility_pa']:.0f}%, "
+            f"Liq={weights['weight_liquidity']:.0f}%)"
+        )
+        bull_evidence_pool.append(EvidenceItem("Regime Allocation", regime_desc, 0.0, True))
+        bear_evidence_pool.append(EvidenceItem("Regime Allocation", regime_desc, 0.0, False))
 
         # Systematic Supporting vs Contradicting Evidence Categorization
         supporting_evidence: list[dict[str, Any]] = []
@@ -254,13 +294,123 @@ class DirectionalScoringEngine:
         )
 
     # -------------------------------------------------------------------------
+    # Regime Weights & State Classification
+    # -------------------------------------------------------------------------
+
+    @classmethod
+    def _get_regime_weights(cls, regime: MarketRegime) -> dict[str, float]:
+        """
+        Return dynamic weight allocation and collinearity caps tailored to market regime.
+        Conforms to Section 7 of Specification & Phase 8 Refinements.
+        """
+        if regime in (MarketRegime.TRENDING_BULLISH, MarketRegime.TRENDING_BEARISH):
+            return {
+                "weight_structure": 20.0,
+                "weight_mtf_trend": 30.0,
+                "weight_momentum": 25.0,
+                "weight_volume": 15.0,
+                "weight_volatility_pa": 5.0,
+                "weight_liquidity": 5.0,
+                "max_struct_trend": settings.MAX_STRUCTURE_TREND_COMBINED,
+                "max_mom_pa": settings.MAX_MOMENTUM_PA_COMBINED,
+                "min_confirm_score": 65.0,
+            }
+        elif regime == MarketRegime.VOLATILE_EXPANSION:
+            return {
+                "weight_structure": 25.0,
+                "weight_mtf_trend": 20.0,
+                "weight_momentum": 15.0,
+                "weight_volume": 15.0,
+                "weight_volatility_pa": 15.0,
+                "weight_liquidity": 10.0,
+                "max_struct_trend": settings.MAX_STRUCTURE_TREND_COMBINED,
+                "max_mom_pa": settings.MAX_MOMENTUM_PA_COMBINED,
+                "min_confirm_score": 75.0,
+            }
+        else:  # RANGE_BOUND, DATA_UNAVAILABLE, SESSION_INACTIVE, etc.
+            return {
+                "weight_structure": 35.0,
+                "weight_mtf_trend": 5.0,
+                "weight_momentum": 10.0,
+                "weight_volume": 15.0,
+                "weight_volatility_pa": 15.0,
+                "weight_liquidity": 20.0,
+                "max_struct_trend": settings.MAX_STRUCTURE_TREND_COMBINED,
+                "max_mom_pa": settings.MAX_MOMENTUM_PA_COMBINED,
+                "min_confirm_score": 65.0,
+            }
+
+    @classmethod
+    def _determine_baseline_regime(
+        cls,
+        df_1h: pd.DataFrame,
+        tf_data: dict[str, dict[str, Any]],
+        session_is_active: bool,
+        data_quality: float,
+        prev_regime: MarketRegime | None = None,
+    ) -> MarketRegime:
+        """
+        Evaluate retrospective indicators (ADX, Volatility Percentile, Structure)
+        to establish baseline regime with hysteresis before computing weighted scores.
+        """
+        if not session_is_active:
+            return MarketRegime.SESSION_INACTIVE
+
+        if data_quality < settings.DATA_QUALITY_MIN_SCORE:
+            return MarketRegime.DATA_UNAVAILABLE
+
+        # 1. Check Volatility Expansion
+        if (
+            not df_1h.empty
+            and "volatility_percentile" in df_1h.columns
+            and pd.notna(df_1h["volatility_percentile"].iloc[-1])
+        ):
+            vp = float(df_1h["volatility_percentile"].iloc[-1])
+            if vp >= settings.VOLATILITY_EXPANSION_PERCENTILE:
+                return MarketRegime.VOLATILE_EXPANSION
+
+        # 2. ADX Trend Strength with Hysteresis
+        adx = (
+            float(df_1h["adx"].iloc[-1])
+            if not df_1h.empty and "adx" in df_1h.columns and pd.notna(df_1h["adx"].iloc[-1])
+            else 20.0
+        )
+
+        entry_thresh = settings.ADX_TREND_ENTRY_THRESHOLD
+        exit_thresh = settings.ADX_TREND_EXIT_THRESHOLD
+
+        if adx >= entry_thresh:
+            struct_1h = tf_data.get("1h", {}).get("structure", {})
+            strend = struct_1h.get("current_trend", "NEUTRAL").upper()
+            if strend == "BULLISH":
+                return MarketRegime.TRENDING_BULLISH
+            elif strend == "BEARISH":
+                return MarketRegime.TRENDING_BEARISH
+            else:
+                close = float(df_1h["close"].iloc[-1]) if not df_1h.empty and "close" in df_1h.columns else 0.0
+                ema50 = (
+                    float(df_1h["ema_50"].iloc[-1])
+                    if not df_1h.empty and "ema_50" in df_1h.columns and pd.notna(df_1h["ema_50"].iloc[-1])
+                    else close
+                )
+                return MarketRegime.TRENDING_BULLISH if close >= ema50 else MarketRegime.TRENDING_BEARISH
+        elif adx < exit_thresh:
+            return MarketRegime.RANGE_BOUND
+        else:
+            # Inside hysteresis deadband [20.0, 25.0)
+            if prev_regime in (MarketRegime.TRENDING_BULLISH, MarketRegime.TRENDING_BEARISH):
+                return prev_regime
+            return MarketRegime.RANGE_BOUND
+
+    # -------------------------------------------------------------------------
     # Scoring Factors
     # -------------------------------------------------------------------------
 
     @classmethod
-    def _score_market_structure(cls, tf_data: dict[str, dict[str, Any]]) -> tuple[float, float, list[EvidenceItem]]:
-        """Market Structure (settings.WEIGHT_STRUCTURE = 25% max weight)."""
-        max_wt = settings.WEIGHT_STRUCTURE
+    def _score_market_structure(
+        cls, tf_data: dict[str, dict[str, Any]], max_wt: float = settings.WEIGHT_STRUCTURE
+    ) -> tuple[float, float, list[EvidenceItem]]:
+        """Market Structure (default settings.WEIGHT_STRUCTURE = 25% max weight)."""
         bull_pts = 0.0
         bear_pts = 0.0
         evidence: list[EvidenceItem] = []
@@ -348,14 +498,14 @@ class DirectionalScoringEngine:
                             )
                         break
 
-        return min(bull_pts, max_wt), min(bear_pts, max_wt), evidence
+        scale = max_wt / 25.0
+        return min(bull_pts * scale, max_wt), min(bear_pts * scale, max_wt), evidence
 
     @classmethod
     def _score_mtf_trend(
-        cls, tf_data: dict[str, dict[str, Any]]
+        cls, tf_data: dict[str, dict[str, Any]], max_wt: float = settings.WEIGHT_MTF_TREND
     ) -> tuple[float, float, list[EvidenceItem], dict[str, Any]]:
-        """Multi-Timeframe Trend (settings.WEIGHT_MTF_TREND = 20% max weight)."""
-        max_wt = settings.WEIGHT_MTF_TREND
+        """Multi-Timeframe Trend (default settings.WEIGHT_MTF_TREND = 20% max weight)."""
         bull_pts = 0.0
         bear_pts = 0.0
         evidence: list[EvidenceItem] = []
@@ -447,12 +597,14 @@ class DirectionalScoringEngine:
                         )
                     )
 
-        return min(bull_pts, max_wt), min(bear_pts, max_wt), evidence, alignment_summary
+        scale = max_wt / 20.0
+        return min(bull_pts * scale, max_wt), min(bear_pts * scale, max_wt), evidence, alignment_summary
 
     @classmethod
-    def _score_momentum(cls, tf_data: dict[str, dict[str, Any]]) -> tuple[float, float, list[EvidenceItem]]:
-        """Momentum Analysis (settings.WEIGHT_MOMENTUM = 15% max weight)."""
-        max_wt = settings.WEIGHT_MOMENTUM
+    def _score_momentum(
+        cls, tf_data: dict[str, dict[str, Any]], max_wt: float = settings.WEIGHT_MOMENTUM
+    ) -> tuple[float, float, list[EvidenceItem]]:
+        """Momentum Analysis (default settings.WEIGHT_MOMENTUM = 15% max weight)."""
         bull_pts = 0.0
         bear_pts = 0.0
         evidence: list[EvidenceItem] = []
@@ -514,12 +666,17 @@ class DirectionalScoringEngine:
             bear_pts += 5.0
             evidence.append(EvidenceItem("Momentum", "Confirmed Bearish Divergence on 1H", 5.0, False))
 
-        return min(bull_pts, max_wt), min(bear_pts, max_wt), evidence
+        scale = max_wt / 15.0
+        return min(bull_pts * scale, max_wt), min(bear_pts * scale, max_wt), evidence
 
     @classmethod
-    def _score_volume(cls, tf_data: dict[str, dict[str, Any]]) -> tuple[float, float, list[EvidenceItem]]:
-        """Volume & Order Flow (settings.WEIGHT_VOLUME = 15% max weight)."""
-        max_wt = settings.WEIGHT_VOLUME
+    def _score_volume(
+        cls,
+        tf_data: dict[str, dict[str, Any]],
+        max_wt: float = settings.WEIGHT_VOLUME,
+        basis: float | None = None,
+    ) -> tuple[float, float, list[EvidenceItem]]:
+        """Volume & Order Flow with Basis Dislocation (default settings.WEIGHT_VOLUME = 15% max weight)."""
         bull_pts = 0.0
         bear_pts = 0.0
         evidence: list[EvidenceItem] = []
@@ -582,12 +739,46 @@ class DirectionalScoringEngine:
                     bear_pts += 5.0
                     evidence.append(EvidenceItem("Volume", "Expanding volume on bearish selloff", 5.0, False))
 
-        return min(bull_pts, max_wt), min(bear_pts, max_wt), evidence
+        # 4. Basis Dislocation Factor (Futures vs Index Premium / Discount Exhaustion)
+        if basis is None and not df_1h.empty and "basis" in df_1h.columns and pd.notna(df_1h["basis"].iloc[-1]):
+            basis = float(df_1h["basis"].iloc[-1])
+
+        if basis is not None and not df_1h.empty and "close" in df_1h.columns:
+            cur_close = float(df_1h["close"].iloc[-1])
+            if cur_close > 0:
+                basis_bps = (basis / cur_close) * 10000.0
+                extreme_thresh = settings.BASIS_EXTREME_BPS  # 25.0 bps
+                if basis_bps >= extreme_thresh:
+                    bear_pts += 5.0
+                    evidence.append(
+                        EvidenceItem(
+                            "Volume",
+                            f"Basis dislocation: Futures trading at +{basis_bps:.1f} bps premium to index "
+                            "(retail euphoria / exhaustion risk)",
+                            5.0,
+                            False,
+                        )
+                    )
+                elif basis_bps <= -extreme_thresh:
+                    bull_pts += 5.0
+                    evidence.append(
+                        EvidenceItem(
+                            "Volume",
+                            f"Basis dislocation: Futures trading at {basis_bps:.1f} bps discount to index "
+                            "(retail liquidation / exhaustion bounce risk)",
+                            5.0,
+                            True,
+                        )
+                    )
+
+        scale = max_wt / 15.0
+        return min(bull_pts * scale, max_wt), min(bear_pts * scale, max_wt), evidence
 
     @classmethod
-    def _score_volatility_pa(cls, tf_data: dict[str, dict[str, Any]]) -> tuple[float, float, list[EvidenceItem]]:
-        """Volatility and Price Action (settings.WEIGHT_VOLATILITY_PA = 15% max weight)."""
-        max_wt = settings.WEIGHT_VOLATILITY_PA
+    def _score_volatility_pa(
+        cls, tf_data: dict[str, dict[str, Any]], max_wt: float = settings.WEIGHT_VOLATILITY_PA
+    ) -> tuple[float, float, list[EvidenceItem]]:
+        """Volatility and Price Action (default settings.WEIGHT_VOLATILITY_PA = 15% max weight)."""
         bull_pts = 0.0
         bear_pts = 0.0
         evidence: list[EvidenceItem] = []
@@ -634,12 +825,14 @@ class DirectionalScoringEngine:
                     )
                     break
 
-        return min(bull_pts, max_wt), min(bear_pts, max_wt), evidence
+        scale = max_wt / 15.0
+        return min(bull_pts * scale, max_wt), min(bear_pts * scale, max_wt), evidence
 
     @classmethod
-    def _score_liquidity(cls, tf_data: dict[str, dict[str, Any]]) -> tuple[float, float, list[EvidenceItem]]:
-        """Liquidity Analysis (settings.WEIGHT_LIQUIDITY = 10% max weight)."""
-        max_wt = settings.WEIGHT_LIQUIDITY
+    def _score_liquidity(
+        cls, tf_data: dict[str, dict[str, Any]], max_wt: float = settings.WEIGHT_LIQUIDITY
+    ) -> tuple[float, float, list[EvidenceItem]]:
+        """Liquidity Analysis (default settings.WEIGHT_LIQUIDITY = 10% max weight)."""
         bull_pts = 0.0
         bear_pts = 0.0
         evidence: list[EvidenceItem] = []
@@ -697,7 +890,8 @@ class DirectionalScoringEngine:
                     )
                 )
 
-        return min(bull_pts, max_wt), min(bear_pts, max_wt), evidence
+        scale = max_wt / 10.0
+        return min(bull_pts * scale, max_wt), min(bear_pts * scale, max_wt), evidence
 
     # -------------------------------------------------------------------------
     # Diagnostics & Classification
@@ -769,6 +963,8 @@ class DirectionalScoringEngine:
         session_is_active: bool,
         tf_alignment: dict[str, Any],
         df_1h: pd.DataFrame,
+        baseline_regime: MarketRegime = MarketRegime.RANGE_BOUND,
+        min_confirm_score: float = 65.0,
     ) -> tuple[MarketRegime, DirectionType, str | None]:
         """Classify directional bias and market regime with strict gating and macro alignment confirmation."""
         if not session_is_active:
@@ -786,8 +982,17 @@ class DirectionalScoringEngine:
             else 20.0
         )
 
-        if bullish_score >= 65.0 and diff >= 25.0 and data_quality >= 80.0:
-            regime = MarketRegime.TRENDING_BULLISH if adx >= 25.0 else MarketRegime.RANGE_BOUND
+        regime: MarketRegime
+        if bullish_score >= min_confirm_score and diff >= 25.0 and data_quality >= 80.0:
+            regime = (
+                baseline_regime
+                if baseline_regime in (MarketRegime.TRENDING_BULLISH, MarketRegime.VOLATILE_EXPANSION)
+                else (
+                    MarketRegime.TRENDING_BULLISH
+                    if adx >= settings.ADX_TREND_ENTRY_THRESHOLD
+                    else MarketRegime.RANGE_BOUND
+                )
+            )
             # Macro alignment confirmation: check if 4H or 1D actively opposes
             opposing_tf = []
             if tf_alignment.get("4h") == "BEARISH":
@@ -802,8 +1007,16 @@ class DirectionalScoringEngine:
                 return regime, DirectionType.POTENTIAL_BULLISH, note
             return regime, DirectionType.BULLISH, None
 
-        if bearish_score >= 65.0 and -diff >= 25.0 and data_quality >= 80.0:
-            regime = MarketRegime.TRENDING_BEARISH if adx >= 25.0 else MarketRegime.RANGE_BOUND
+        if bearish_score >= min_confirm_score and -diff >= 25.0 and data_quality >= 80.0:
+            regime = (
+                baseline_regime
+                if baseline_regime in (MarketRegime.TRENDING_BEARISH, MarketRegime.VOLATILE_EXPANSION)
+                else (
+                    MarketRegime.TRENDING_BEARISH
+                    if adx >= settings.ADX_TREND_ENTRY_THRESHOLD
+                    else MarketRegime.RANGE_BOUND
+                )
+            )
             # Macro alignment confirmation: check if 4H or 1D actively opposes
             opposing_tf = []
             if tf_alignment.get("4h") == "BULLISH":
@@ -819,12 +1032,12 @@ class DirectionalScoringEngine:
             return regime, DirectionType.BEARISH, None
 
         if bullish_score >= 50.0 and diff > 10.0:
-            return MarketRegime.RANGE_BOUND, DirectionType.POTENTIAL_BULLISH, None
+            return baseline_regime, DirectionType.POTENTIAL_BULLISH, None
 
         if bearish_score >= 50.0 and -diff > 10.0:
-            return MarketRegime.RANGE_BOUND, DirectionType.POTENTIAL_BEARISH, None
+            return baseline_regime, DirectionType.POTENTIAL_BEARISH, None
 
-        return MarketRegime.RANGE_BOUND, DirectionType.NEUTRAL, None
+        return baseline_regime, DirectionType.NEUTRAL, None
 
     @classmethod
     def _extract_key_levels(cls, df_1h: pd.DataFrame, struct_1h: dict[str, Any]) -> KeyLevels:

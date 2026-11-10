@@ -30,6 +30,7 @@ from backend.database import get_async_session
 from backend.decision.lifecycle import SetupLifecycleTracker
 from backend.decision.models import (
     DirectionType,
+    MarketRegime,
     SetupStatus,
     TradeDirection,
     TradeSetupModel,
@@ -139,6 +140,7 @@ class BacktestEngine:
 
         # Burn-in window: ensure sufficient history for 1D/4H indicators
         burn_in = min(30, total_bars // 4)
+        last_regime: MarketRegime | None = None
 
         # 3. Step chronologically bar-by-bar
         for i in range(burn_in, total_bars):
@@ -160,7 +162,12 @@ class BacktestEngine:
                 as_of_time=t_eval,
                 is_live=False,
                 require_completed_candles=True,
+                prev_regime=last_regime,
             )
+            try:
+                last_regime = MarketRegime(assessment.market_regime)
+            except (ValueError, TypeError):
+                last_regime = None
 
             # A. Track Directional Signal Evaluation (5, 10, 20, 50 bars)
             if assessment.direction != DirectionType.NEUTRAL:

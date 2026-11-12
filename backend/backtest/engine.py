@@ -13,6 +13,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+import numpy as np
 import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
@@ -142,18 +143,31 @@ class BacktestEngine:
         burn_in = min(30, total_bars // 4)
         last_regime: MarketRegime | None = None
 
+        # Precompute searchsorted arrays for fast zero-lookahead slicing
+        ct_arrays = {
+            tf: df["close_time"].to_numpy()
+            for tf, df in ind_candles.items()
+            if not df.empty and "close_time" in df.columns
+        }
+
+        # Precompute 5M sub-bar dicts and open/close timestamps
+        df_5m_dicts = df_5m.to_dict("records") if not df_5m.empty else []
+        s5m_open = df_5m["open_time"].to_numpy() if not df_5m.empty else np.array([])
+        s5m_close = df_5m["close_time"].to_numpy() if not df_5m.empty else np.array([])
+
         # 3. Step chronologically bar-by-bar
         for i in range(burn_in, total_bars):
             t_eval = all_1h_close_times[i]
             is_in_sample = i <= in_sample_cutoff_idx
 
-            # Slicing: strictly NO LOOKAHEAD - only candles closed at or before t_eval
+            # Slicing: strictly NO LOOKAHEAD - trailing 150 bars closed at or before t_eval
             sliced_tf_data: dict[str, pd.DataFrame] = {}
             for tf, df in ind_candles.items():
-                if not df.empty and "close_time" in df.columns:
-                    sliced_tf_data[tf] = df[df["close_time"] <= t_eval].copy()
+                if tf in ct_arrays:
+                    idx = int(np.searchsorted(ct_arrays[tf], t_eval, side="right"))
+                    sliced_tf_data[tf] = df.iloc[max(0, idx - 150) : idx]
                 else:
-                    sliced_tf_data[tf] = df.copy()
+                    sliced_tf_data[tf] = df
 
             # Execute Engine A & Engine B via DecisionOrchestrator
             assessment, setups = DecisionOrchestrator.process_timeframe_data(
@@ -171,7 +185,7 @@ class BacktestEngine:
 
             # A. Track Directional Signal Evaluation (5, 10, 20, 50 bars)
             if assessment.direction != DirectionType.NEUTRAL:
-                future_1h = df_1h_ind[df_1h_ind["open_time"] >= t_eval].copy()
+                future_1h = df_1h_ind.iloc[i : min(total_bars, i + 51)]
                 if not future_1h.empty:
                     horizons_outcomes = DirectionalSignalEvaluator.evaluate_signal_horizons(
                         assessment=assessment,
@@ -193,13 +207,12 @@ class BacktestEngine:
 
             # C. Multi-resolution execution on 5M sub-bars for the current 1H interval
             curr_bar_open = df_1h_ind["open_time"].iloc[i]
-            if not df_5m.empty and "open_time" in df_5m.columns:
-                sub_bars = df_5m[(df_5m["open_time"] >= curr_bar_open) & (df_5m["close_time"] <= t_eval)]
+            if len(df_5m_dicts) > 0:
+                start_5m = int(np.searchsorted(s5m_open, curr_bar_open, side="left"))
+                end_5m = int(np.searchsorted(s5m_close, t_eval, side="right"))
+                bars_to_eval = df_5m_dicts[start_5m:end_5m]
             else:
-                sub_bars = pd.DataFrame()
-
-            # Iterate over sub-bars (or current 1H bar if 5M unavailable)
-            bars_to_eval = [row for _, row in sub_bars.iterrows()] if not sub_bars.empty else [df_1h_ind.iloc[i]]
+                bars_to_eval = [df_1h_ind.iloc[i].to_dict()]
 
             still_active: list[TradeSetupModel] = []
             for setup in active_setups:

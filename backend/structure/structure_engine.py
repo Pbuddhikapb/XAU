@@ -35,6 +35,7 @@ class StructureEngine:
         timeframe: str = "1h",
         swing_window: int = 3,
         time_col: str = "open_time",
+        include_auxiliary: bool = True,
     ) -> dict[str, Any]:
         """
         Run complete structural and price action analysis on a single timeframe's candles.
@@ -54,14 +55,19 @@ class StructureEngine:
             df, timeframe=timeframe, swing_window=swing_window, time_col=time_col
         )
 
-        # 2. Liquidity sweeps (false breakouts / stop runs)
-        sweeps = detect_liquidity_sweeps(df, timeframe=timeframe, swing_window=swing_window, time_col=time_col)
+        if include_auxiliary:
+            # 2. Liquidity sweeps (false breakouts / stop runs)
+            sweeps = detect_liquidity_sweeps(df, timeframe=timeframe, swing_window=swing_window, time_col=time_col)
 
-        # 3. Price action patterns (rejection wicks, engulfing)
-        patterns = detect_price_action_patterns(df, time_col=time_col)
+            # 3. Price action patterns (rejection wicks, engulfing)
+            patterns = detect_price_action_patterns(df, time_col=time_col)
 
-        # 4. Support and Resistance zones
-        zones = detect_support_resistance_zones(df, swing_window=swing_window, time_col=time_col)
+            # 4. Support and Resistance zones
+            zones = detect_support_resistance_zones(df, swing_window=swing_window, time_col=time_col)
+        else:
+            sweeps = []
+            patterns = []
+            zones = []
 
         return {
             "timeframe": timeframe,

@@ -9,6 +9,20 @@ import { createChart, ColorType, IChartApi, ISeriesApi, LineData, Time } from "l
 import { api } from "../../services/api";
 import type { BacktestRun, BacktestRunDetail } from "../../types";
 
+const num = (val: any, decimals: number = 2): string => {
+  if (val === null || val === undefined) return (0).toFixed(decimals);
+  const n = Number(val);
+  return isNaN(n) ? (0).toFixed(decimals) : n.toFixed(decimals);
+};
+
+const formatPct = (val: any): string => {
+  if (val === null || val === undefined) return "0.0%";
+  const n = Number(val);
+  if (isNaN(n)) return "0.0%";
+  const pct = n > 1 ? n : n * 100;
+  return `${pct.toFixed(1)}%`;
+};
+
 export const BacktestStudioView: React.FC = () => {
   const [runs, setRuns] = useState<BacktestRun[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
@@ -199,13 +213,13 @@ export const BacktestStudioView: React.FC = () => {
             <span className="text-slate-400 text-[10px] uppercase block">WIN RATE</span>
             <span
               className={`text-xl font-bold ${
-                (metrics.win_rate_pct ?? metrics.win_rate ?? 0) >= 50 ? "text-bull-400" : "text-bear-400"
+                Number(metrics.win_rate_pct ?? metrics.win_rate ?? 0) >= 50 ? "text-bull-400" : "text-bear-400"
               }`}
             >
-              {(metrics.win_rate_pct ?? metrics.win_rate ?? 0).toFixed(1)}%
+              {formatPct(metrics.win_rate_pct ?? metrics.win_rate)}
             </span>
             <span className="text-slate-500 text-[10px] block">
-              {metrics.winning_trades ?? 0}W / {metrics.losing_trades ?? 0}L / {metrics.breakeven_trades ?? 0}BE
+              {Number(metrics.winning_trades ?? 0)}W / {Number(metrics.losing_trades ?? 0)}L / {Number(metrics.breakeven_trades ?? 0)}BE
             </span>
           </div>
 
@@ -213,10 +227,10 @@ export const BacktestStudioView: React.FC = () => {
             <span className="text-slate-400 text-[10px] uppercase block">PROFIT FACTOR</span>
             <span
               className={`text-xl font-bold ${
-                (metrics.profit_factor ?? 0) >= 1.5 ? "text-bull-400" : "text-slate-200"
+                Number(metrics.profit_factor ?? 0) >= 1.5 ? "text-bull-400" : "text-slate-200"
               }`}
             >
-              {(metrics.profit_factor ?? 0) >= 999 ? "∞" : (metrics.profit_factor ?? 0).toFixed(2)}
+              {Number(metrics.profit_factor ?? 0) >= 999 ? "∞" : num(metrics.profit_factor, 2)}
             </span>
             <span className="text-slate-500 text-[10px] block">Gross P/L Ratio</span>
           </div>
@@ -225,10 +239,10 @@ export const BacktestStudioView: React.FC = () => {
             <span className="text-slate-400 text-[10px] uppercase block">SHARPE RATIO</span>
             <span
               className={`text-xl font-bold ${
-                (metrics.sharpe_ratio ?? 0) >= 1.5 ? "text-bull-400" : "text-slate-200"
+                Number(metrics.sharpe_ratio ?? 0) >= 1.5 ? "text-bull-400" : "text-slate-200"
               }`}
             >
-              {metrics.sharpe_ratio != null ? metrics.sharpe_ratio.toFixed(2) : "N/A"}
+              {metrics.sharpe_ratio != null ? num(metrics.sharpe_ratio, 2) : "N/A"}
             </span>
             <span className="text-slate-500 text-[10px] block">Risk-Adjusted</span>
           </div>
@@ -236,10 +250,10 @@ export const BacktestStudioView: React.FC = () => {
           <div className="bg-surface border border-border p-3 rounded-lg shadow">
             <span className="text-slate-400 text-[10px] uppercase block">MAX DRAWDOWN</span>
             <span className="text-xl font-bold text-bear-400">
-              {(metrics.max_drawdown_pct ?? metrics.max_drawdown ?? 0).toFixed(2)}%
+              {formatPct(metrics.max_drawdown_pct ?? metrics.max_drawdown)}
             </span>
             <span className="text-slate-500 text-[10px] block">
-              -${(metrics.max_drawdown_dollars ?? 0).toFixed(0)}
+              -${num(metrics.max_drawdown_dollars, 0)}
             </span>
           </div>
 
@@ -247,24 +261,24 @@ export const BacktestStudioView: React.FC = () => {
             <span className="text-slate-400 text-[10px] uppercase block">NET REALIZED PNL</span>
             <span
               className={`text-xl font-bold ${
-                (metrics.net_pnl_dollars ?? 0) >= 0 ? "text-bull-400" : "text-bear-400"
+                Number(metrics.net_pnl_dollars ?? 0) >= 0 ? "text-bull-400" : "text-bear-400"
               }`}
             >
-              {(metrics.net_pnl_dollars ?? 0) >= 0 ? "+" : ""}${(metrics.net_pnl_dollars ?? 0).toFixed(2)}
+              {Number(metrics.net_pnl_dollars ?? 0) >= 0 ? "+" : ""}${num(metrics.net_pnl_dollars, 2)}
             </span>
             <span className="text-slate-500 text-[10px] block">
-              ({(metrics.net_pnl_pct ?? 0).toFixed(2)}%)
+              ({num(metrics.net_pnl_pct, 2)}%)
             </span>
           </div>
 
           <div className="bg-surface border border-border p-3 rounded-lg shadow">
             <span className="text-slate-400 text-[10px] uppercase block">EXPECTANCY</span>
             <span className="text-xl font-bold text-gold-400">
-              {(metrics.expectancy_r ?? metrics.expectancy ?? 0) >= 0 ? "+" : ""}
-              {(metrics.expectancy_r ?? metrics.expectancy ?? 0).toFixed(2)} R
+              {Number(metrics.expectancy_r ?? metrics.expectancy ?? 0) >= 0 ? "+" : ""}
+              {num(metrics.expectancy_r ?? metrics.expectancy, 2)} R
             </span>
             <span className="text-slate-500 text-[10px] block">
-              ${(metrics.expectancy_dollars ?? metrics.expectancy ?? 0).toFixed(1)} / trade
+              ${num(metrics.expectancy_dollars ?? metrics.expectancy, 1)} / trade
             </span>
           </div>
         </div>
@@ -297,25 +311,25 @@ export const BacktestStudioView: React.FC = () => {
             <div className="flex justify-between text-slate-300">
               <span>In-Sample Win Rate:</span>
               <span className="font-bold">
-                {((metrics?.in_sample_metrics?.win_rate ?? 0) * 100).toFixed(1)}%
+                {formatPct(metrics?.in_sample_metrics?.win_rate)}
               </span>
             </div>
             <div className="flex justify-between text-slate-300">
               <span>Out-of-Sample Win Rate:</span>
               <span className="font-bold">
-                {((metrics?.out_of_sample_metrics?.win_rate ?? 0) * 100).toFixed(1)}%
+                {formatPct(metrics?.out_of_sample_metrics?.win_rate)}
               </span>
             </div>
             <div className="flex justify-between text-slate-300 border-t border-border pt-1">
               <span>Performance Degradation:</span>
               <span
                 className={`font-bold ${
-                  (metrics?.performance_degradation_pct ?? 0) <= 20
+                  Number(metrics?.performance_degradation_pct ?? 0) <= 20
                     ? "text-bull-400"
                     : "text-bear-400"
                 }`}
               >
-                {(metrics?.performance_degradation_pct ?? 0).toFixed(1)}%
+                {num(metrics?.performance_degradation_pct, 1)}%
               </span>
             </div>
           </div>
@@ -325,20 +339,20 @@ export const BacktestStudioView: React.FC = () => {
             <div className="bg-card p-2 rounded border border-border">
               <span className="text-bull-400 font-semibold block text-[10px]">LONG TRADES</span>
               <div className="text-sm font-bold text-slate-100">
-                {metrics?.long_performance?.trades ?? 0} trades
+                {Number(metrics?.long_performance?.trades ?? (metrics as any)?.long_trades ?? 0)} trades
               </div>
               <div className="text-[10px] text-slate-400">
-                WR: {((metrics?.long_performance?.win_rate ?? 0) * 100).toFixed(1)}%
+                WR: {formatPct(metrics?.long_performance?.win_rate ?? (metrics as any)?.long_win_rate)}
               </div>
             </div>
 
             <div className="bg-card p-2 rounded border border-border">
               <span className="text-bear-400 font-semibold block text-[10px]">SHORT TRADES</span>
               <div className="text-sm font-bold text-slate-100">
-                {metrics?.short_performance?.trades ?? 0} trades
+                {Number(metrics?.short_performance?.trades ?? (metrics as any)?.short_trades ?? 0)} trades
               </div>
               <div className="text-[10px] text-slate-400">
-                WR: {((metrics?.short_performance?.win_rate ?? 0) * 100).toFixed(1)}%
+                WR: {formatPct(metrics?.short_performance?.win_rate ?? (metrics as any)?.short_win_rate)}
               </div>
             </div>
           </div>
@@ -391,11 +405,11 @@ export const BacktestStudioView: React.FC = () => {
                       </span>
                     </td>
                     <td className="p-2.5 text-slate-300">{t.setup_type}</td>
-                    <td className="p-2.5 text-slate-200">${(t.entry_price ?? 0).toFixed(2)}</td>
+                    <td className="p-2.5 text-slate-200">${num(t.entry_price, 2)}</td>
                     <td className="p-2.5 text-slate-300">
                       {new Date(t.exit_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                     </td>
-                    <td className="p-2.5 text-slate-200">${(t.exit_price ?? 0).toFixed(2)}</td>
+                    <td className="p-2.5 text-slate-200">${num(t.exit_price, 2)}</td>
                     <td className="p-2.5">
                       <span
                         className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
@@ -411,18 +425,18 @@ export const BacktestStudioView: React.FC = () => {
                     </td>
                     <td
                       className={`p-2.5 font-bold ${
-                        (t.pnl_dollars ?? 0) >= 0 ? "text-bull-400" : "text-bear-400"
+                        Number(t.pnl_dollars ?? 0) >= 0 ? "text-bull-400" : "text-bear-400"
                       }`}
                     >
-                      {(t.pnl_dollars ?? 0) >= 0 ? "+" : ""}${((t.pnl_dollars ?? 0)).toFixed(2)}
+                      {Number(t.pnl_dollars ?? 0) >= 0 ? "+" : ""}${num(t.pnl_dollars, 2)}
                     </td>
                     <td
                       className={`p-2.5 font-bold ${
-                        (t.r_multiple ?? 0) >= 0 ? "text-gold-400" : "text-bear-400"
+                        Number(t.r_multiple ?? 0) >= 0 ? "text-gold-400" : "text-bear-400"
                       }`}
                     >
-                      {(t.r_multiple ?? 0) >= 0 ? "+" : ""}
-                      {((t.r_multiple ?? 0)).toFixed(2)}R
+                      {Number(t.r_multiple ?? 0) >= 0 ? "+" : ""}
+                      {num(t.r_multiple, 2)}R
                     </td>
                   </tr>
                 ))

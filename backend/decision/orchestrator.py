@@ -72,7 +72,7 @@ class DecisionOrchestrator:
                 continue
 
             # 1. Compute indicators (reuse precomputed indicators if present)
-            if "ema_9" in df_raw.columns and "atr_14" in df_raw.columns:
+            if "ema_20" in df_raw.columns and "atr_14" in df_raw.columns:
                 df_ind = df_raw
             else:
                 df_ind = IndicatorEngine.compute_all_indicators(
@@ -81,8 +81,13 @@ class DecisionOrchestrator:
 
             # 2. Compute market structure (trailing 150 bars to match live execution)
             df_struct_slice = df_ind.iloc[-150:] if len(df_ind) > 150 else df_ind
+            include_aux = (tf == "1h") or is_live
             struct_res = StructureEngine.analyze_timeframe(
-                df_struct_slice, timeframe=tf, swing_window=3, time_col="open_time"
+                df_struct_slice,
+                timeframe=tf,
+                swing_window=3,
+                time_col="open_time",
+                include_auxiliary=include_aux,
             )
 
             processed_tf_data[tf] = {
